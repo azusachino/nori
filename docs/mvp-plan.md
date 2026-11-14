@@ -33,6 +33,10 @@ A single learner can run Same on Bun with one SQLite database, discuss a goal wi
 6. **External authoring and portability.** Scoped agent API, documentation and export. Gate: an agent creates a reviewable draft, cannot submit learner work, and exported material is readable outside Same.
 7. **Acceptance.** Run the project's checks and a browser journey on desktop and mobile using a real compatible LLM when available. Record model, commands, outcomes, failures, and what was only tested with fixtures. Verify the real production start and persistent volume separately from development.
 
+## Initial framework spike (2026-11-14)
+
+A disposable TanStack Start React scaffold (`@tanstack/react-start` 1.169.5, Nitro 3.0.260610-beta, Bun 1.4.4) built for Nitro's Bun preset. The production server returned HTTP 200 for its page; a `bun:sqlite` endpoint returned visit count 1, then count 2 after a server restart. A separate streaming endpoint delivered its first line immediately and its second approximately 0.5 seconds later. The build emitted warnings that module-level `use client` directives may not be preserved. This is evidence for a minimal server path only: no real LLM, UI, authentication, proxy, migration, backup, load or SvelteKit comparison was tested. The scaffold and database live in ignored scratch and are not application code. TanStack Start remains the provisional choice until the warnings and a representative UI are evaluated.
+
 ## Open implementation decisions
 
 - Choose TanStack Start or SvelteKit only after the framework spike; no UI depends on the choice yet.
