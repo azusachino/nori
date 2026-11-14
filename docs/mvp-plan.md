@@ -17,7 +17,7 @@ A single learner can run Nori on Bun with one SQLite database, discuss a goal wi
 
 ## Architecture and decisions
 
-- **Runtime and storage:** Bun and SQLite, single owner, single application instance. Store uploaded source files in a persistent directory; backups must cover both the database and those files. No separate queue, cache, or database service.
+- **Runtime and storage:** Bun and SQLite, single owner, single application instance. Store uploaded source files and extracted text in SQLite; backups must include the database and its WAL-consistent state. No separate queue, cache, or database service.
 - **Framework decision gate:** TanStack Start + React is the leading candidate. Before committing the application architecture, build and run a production spike on Bun that serves a page and API, reads/writes `bun:sqlite`, survives restart, and streams a response. Check SvelteKit's official Bun adapter against the same criteria if the TanStack path is awkward. Record actual command results and choose based on implementation evidence.
 - **AI boundary:** An OpenAI-compatible server endpoint and model are configured by the operator. AI outputs are validated before persistence. Keep model calls outside SQLite transactions; show failures and permit retries. Do not assume model grading is authoritative.
 - **Interaction:** Course outline, module draft, and accepted learning material are distinct states. Store the learner's work separately from generated content; any revision preserves completed work.
