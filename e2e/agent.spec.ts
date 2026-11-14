@@ -1,18 +1,15 @@
 import { test, expect } from '@playwright/test'
 
-test('agent can create drafts but cannot approve or record learner work', async ({ request, page }) => {
-  const headers = { Authorization: `Bearer ${'a'.repeat(64)}` }
-  expect((await request.post('/api/agent/courses', { data: { title: 'Denied', goal: 'Denied' } })).status()).toBe(401)
+test('agent draft routes preserve the review workflow', async ({ request, page }) => {
+  const headers = { 'X-Nori-Agent': '1' }
+  expect((await request.post('/api/agent/courses', { data: { title: 'Denied', goal: 'Denied' } })).status()).toBe(403)
   const title = `Agent course ${crypto.randomUUID()}`
   const created = await request.post('/api/agent/courses', { headers, data: { title, goal: 'Study this topic.' } })
   expect(created.status()).toBe(201)
   const course = await created.json() as { id: string }
   expect((await request.post(`/api/agent/courses/${course.id}/outline`, { headers, data: { outline: 'Module 1: Foundations' } })).status()).toBe(200)
   expect((await request.post(`/api/agent/courses/${course.id}/approve`, { headers, data: {} })).status()).toBe(404)
-  expect((await request.post(`/api/courses/${course.id}/approve`, { headers, data: {} })).status()).toBe(401)
   await page.goto('/')
-  await page.getByLabel('Password').fill('test-password-only')
-  await page.getByRole('button', { name: 'Sign in' }).click()
   await page.getByRole('button', { name: title }).click()
   await expect(page.getByLabel('Edit your outline')).toHaveValue('Module 1: Foundations')
   await page.getByRole('button', { name: 'Approve outline' }).click()
@@ -31,6 +28,38 @@ test('agent can create drafts but cannot approve or record learner work', async 
   await page.reload()
   await page.getByRole('button', { name: title }).click()
   await expect(page.getByRole('heading', { name: 'Agent module revised' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Accept module' })).toBeVisible()
+  await page.getByLabel('Module title').fill('My unsaved edit')
+  const latest = await (await request.get(`/api/agent/courses/${course.id}`, { headers })).json() as { draft: { content: typeof content; contentHash: string } }
+  latest.draft.content.title = 'Changed elsewhere'
+  expect((await request.post(`/api/agent/courses/${course.id}/module`, { headers, data: { content: latest.draft.content, expectedContentHash: latest.draft.contentHash } })).status()).toBe(200)
+  await page.getByLabel('Your message').fill('Please explain.')
+  await page.getByRole('button', { name: 'Send message' }).click()
+  await expect(page.getByRole('alert')).toContainText('draft changed elsewhere')
+  await expect(page.getByLabel('Module title')).toHaveValue('My unsaved edit')
+  await expect(page.getByRole('button', { name: 'Save draft changes' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Accept module' })).toBeDisabled()
   expect((await request.post(`/api/agent/courses/${course.id}/answer`, { headers, data: {} })).status()).toBe(404)
+})
+
+test('learner can remove a source when the model context is too large', async ({ page, request, baseURL }) => {
+  const headers = { Origin: baseURL! }
+  const title = `Large source ${crypto.randomUUID()}`
+  const created = await request.post('/api/courses', { headers, data: { title, goal: 'Study this topic.' } })
+  const course = await created.json() as { id: string }
+  const source = await request.post(`/api/courses/${course.id}/sources`, { headers, multipart: { file: { name: 'large.txt', mimeType: 'text/plain', buffer: Buffer.from('a'.repeat(99990)) } } })
+  expect(source.status()).toBe(201)
+  const outline = 'b'.repeat(19989)
+  expect((await request.post(`/api/courses/${course.id}/outline`, { headers, data: { outline, expectedOutline: '' } })).status()).toBe(200)
+  expect((await request.post(`/api/courses/${course.id}/approve`, { headers, data: { expectedOutline: outline } })).status()).toBe(200)
+  const failed = await request.post(`/api/courses/${course.id}/module`, { headers, data: {} })
+  expect(failed.status()).toBe(502)
+  expect((await failed.json()).error).toContain('Remove a source')
+  await page.goto('/')
+  await page.getByRole('button', { name: title }).click()
+  await page.getByText('Sources (1)').click()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Remove', exact: true }).click()
+  await expect(page.getByText('large.txt')).not.toBeVisible()
+  await page.getByRole('button', { name: 'Generate first module' }).click()
+  await expect(page.getByRole('button', { name: 'Accept module' })).toBeVisible()
 })

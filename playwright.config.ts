@@ -1,5 +1,4 @@
 import { defineConfig, devices } from '@playwright/test'
-import { createHash } from 'node:crypto'
 
 const origin = 'http://127.0.0.1:3173'
 export default defineConfig({
@@ -21,9 +20,7 @@ export default defineConfig({
       NORI_ORIGIN: origin,
       NORI_LLM_BASE_URL: 'http://127.0.0.1:3174/v1',
       NORI_LLM_MODEL: 'fixture',
-      NORI_AGENT_TOKEN_HASH: createHash('sha256').update('a'.repeat(64)).digest('hex'),
       NORI_DATABASE_PATH: '.tmp/e2e/nori.sqlite',
-      NORI_PASSWORD_HASH: '$argon2id$v=19$m=65536,t=2,p=1$q8w1RW/zZywCU/1mkKoCd1MYE6rWoFiQOEzGdbjZesc$UDCzqR8LeO3wP8wapjmTiu2LqcoK91wvNMHCHTGds+A',
     },
   }],
 })

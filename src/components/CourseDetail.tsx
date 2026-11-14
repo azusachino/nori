@@ -21,10 +21,10 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
     setBusy(true); setError('')
     try {
       const response = await fetch(`/api/courses/${id}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
-      const result = await response.json() as { error?: string }
+      const result = await response.json() as { error?: string; module?: ModuleData }
       if (!response.ok) throw new Error(result.error || 'Something went wrong.')
       await load(action === 'outline' || action === 'approve')
-      return true
+      return result
     } catch (err) { setError(err instanceof Error ? err.message : 'Something went wrong.'); return false }
     finally { setBusy(false) }
   }
@@ -52,7 +52,7 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
     <p className="eyebrow">YOUR LEARNING SPACE / COURSE PLANNING</p><h1>{course.title}<span className="accent">.</span></h1><p className="intro">{course.goal}</p>
     <p className="source-disclaimer">{course.sources.length ? 'Source material is provided to the model; generated citations are not verified.' : 'No sources added. Generated material is unverified.'}</p>
     <details className="planning" open={!course.module?.accepted}><summary>Course planning and outline</summary><div className="course-workspace"><section className="conversation"><div className="section-heading"><div><p className="eyebrow">01 / PLAN TOGETHER</p><h2>Shape your course</h2></div></div><p className="muted">Tell your tutor about your experience, what you’re curious about, and how you like to learn. The most recent 20 messages are sent to your model.</p>
-      <details className="sources"><summary>Sources {course.sources.length ? `(${course.sources.length})` : '(optional)'}</summary><p className="muted">Add Markdown, text, or a text-based PDF. Sources are sent to your configured model when generating the course.</p>{course.sources.length > 0 && <ul>{course.sources.map((source) => <li key={source.id}>{source.name}</li>)}</ul>}<form onSubmit={(event) => void upload(event)}><label htmlFor="source">Add a source · up to 5 MB</label><input id="source" type="file" accept=".md,.markdown,.txt,.pdf" onChange={(event) => setFile(event.target.files?.[0] || null)} required /><button className="secondary" disabled={busy}>Add source</button></form></details>
+      <details className="sources"><summary>Sources {course.sources.length ? `(${course.sources.length})` : '(optional)'}</summary><p className="muted">Add Markdown, text, or a text-based PDF. Sources are sent to your configured model when generating the course.</p>{course.sources.length > 0 && <ul>{course.sources.map((source) => <li key={source.id}>{source.name} <button type="button" className="text-button" disabled={busy} onClick={() => { if (window.confirm(`Remove ${source.name} from this course?`)) void post('remove-source', { sourceId: source.id }) }}>Remove</button></li>)}</ul>}<form onSubmit={(event) => void upload(event)}><label htmlFor="source">Add a source · up to 5 MB</label><input id="source" type="file" accept=".md,.markdown,.txt,.pdf" onChange={(event) => setFile(event.target.files?.[0] || null)} required /><button className="secondary" disabled={busy}>Add source</button></form></details>
       <div className="messages" aria-label="Conversation">{course.messages.length === 0 ? <p className="message-hint">Start with what you already know, or ask for a suggested direction.</p> : course.messages.map((item, index) => <article className={`message ${item.role}`} key={index}><p className="course-label">{item.role === 'user' ? 'YOU' : 'YOUR TUTOR'}</p><p>{item.content}</p></article>)}</div>
       <form onSubmit={(event) => void send(event)}><label htmlFor="message">Your message</label><textarea id="message" rows={3} maxLength={4000} value={message} onChange={(event) => setMessage(event.target.value)} required /><button className="primary" disabled={busy}>{busy ? 'Thinking…' : 'Send message'} <span aria-hidden="true">↗</span></button></form>
     </section><aside className="outline-panel"><p className="eyebrow">02 / YOUR OUTLINE</p><h2>A plan to make it yours.</h2><p className="muted">Generate an outline from your goal and conversation, then edit it before approving.</p>

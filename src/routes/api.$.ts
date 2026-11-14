@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { createHash } from 'node:crypto'
-import { authenticated, login, logout, sameOrigin } from '../lib/server/auth'
+import { sameOrigin, validHost } from '../lib/server/auth'
 import { db } from '../lib/server/db'
 import { readJson } from '../lib/server/input'
 import { complete, ModelError } from '../lib/server/ai'
@@ -10,10 +10,11 @@ import { agentApi } from '../lib/server/agent'
 
 async function handle(request: Request): Promise<Response> {
   const path = new URL(request.url).pathname
-  if (path.startsWith('/api/agent/')) return agentApi(request)
-  if (path === '/api/login' && request.method === 'POST') return login(request)
-  if (path === '/api/logout' && request.method === 'POST') return logout(request)
-  if (!authenticated(request)) return Response.json({ error: 'Sign in to continue' }, { status: 401 })
+  if (!validHost(request)) return Response.json({ error: 'Invalid request host' }, { status: 403 })
+  if (path.startsWith('/api/agent/')) {
+    if (request.method !== 'GET' && (request.headers.get('x-nori-agent') !== '1' || (request.headers.has('origin') && !sameOrigin(request)))) return Response.json({ error: 'Invalid agent request' }, { status: 403 })
+    return agentApi(request)
+  }
   if (request.method !== 'GET' && !sameOrigin(request)) return Response.json({ error: 'Invalid request origin' }, { status: 403 })
   if (path === '/api/courses' && request.method === 'GET') {
     return Response.json(db.query('SELECT id, title, goal, created_at FROM courses ORDER BY created_at DESC').all(), { headers: { 'Cache-Control': 'no-store' } })
@@ -27,7 +28,7 @@ async function handle(request: Request): Promise<Response> {
     db.run('INSERT INTO courses (id, title, goal, created_at) VALUES (?, ?, ?, ?)', [course.id, course.title, course.goal, course.created_at])
     return Response.json(course, { status: 201 })
   }
-  const match = path.match(/^\/api\/courses\/([0-9a-f-]{36})(?:\/(chat|outline|approve|module|save-module|accept|answer|sources|export|feedback))?$/)
+  const match = path.match(/^\/api\/courses\/([0-9a-f-]{36})(?:\/(chat|outline|approve|module|save-module|accept|answer|sources|remove-source|export|feedback))?$/)
   if (match) {
     const [, id, action] = match
     const course = db.query('SELECT id, title, goal, outline, outline_approved FROM courses WHERE id = ?').get(id) as { id: string; title: string; goal: string; outline: string; outline_approved: number } | null
@@ -64,6 +65,13 @@ async function handle(request: Request): Promise<Response> {
         db.run('INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), id, source.name, source.bytes, source.text, Date.now()])
         return Response.json({ sources: sources() }, { status: 201 })
       } catch (error) { return Response.json({ error: error instanceof Error ? error.message : 'Could not read this file.' }, { status: 400 }) }
+    }
+    if (request.method === 'POST' && action === 'remove-source') {
+      const body = await readJson(request) as { sourceId?: unknown } | null
+      if (typeof body?.sourceId !== 'string') return Response.json({ error: 'Choose a source to remove.' }, { status: 400 })
+      const result = db.run('DELETE FROM sources WHERE id = ? AND course_id = ?', [body.sourceId, id])
+      if (!result.changes) return Response.json({ error: 'Source not found.' }, { status: 404 })
+      return Response.json({ ok: true })
     }
     if (request.method === 'POST' && action === 'chat') {
       const body = await readJson(request) as { message?: unknown } | null
@@ -164,7 +172,8 @@ async function handle(request: Request): Promise<Response> {
 const pending = new Set<string>()
 async function guarded(request: Request): Promise<Response> {
   const path = new URL(request.url).pathname
-  const key = request.method === 'POST' && /^\/api\/courses\/[0-9a-f-]{36}\/(?:chat|outline|module)$/.test(path) ? path : null
+  const match = request.method === 'POST' ? path.match(/^\/api\/(?:agent\/)?courses\/([0-9a-f-]{36})\/(chat|outline|module)$/) : null
+  const key = match ? `${match[1]}:${match[2]}` : null
   if (key && pending.has(key)) return Response.json({ error: 'A request is already in progress. Please wait.' }, { status: 409 })
   if (key) pending.add(key)
   try { return await handle(request) } finally { if (key) pending.delete(key) }

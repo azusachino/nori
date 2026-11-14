@@ -5,7 +5,7 @@ type Message = { role: 'system' | 'user' | 'assistant'; content: string }
 export class ModelError extends Error {}
 
 export async function complete(messages: Message[], maxTokens = 2000): Promise<string> {
-  if (messages.reduce((total, message) => total + message.content.length, 0) > 120000) throw new ModelError('The material is too long for one request. Use shorter source documents or conversation messages.')
+  if (messages.reduce((total, message) => total + message.content.length, 0) > 120000) throw new ModelError('The material is too long for one request. Remove a source or shorten the conversation or draft outline, then try again.')
   const base = setting('LLM_BASE_URL')
   const model = setting('LLM_MODEL')
   if (!base || !model) throw new ModelError('Set NORI_LLM_BASE_URL and NORI_LLM_MODEL to use the tutor.')

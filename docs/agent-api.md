@@ -1,16 +1,8 @@
 # Agent authoring API
 
-Nori can accept course drafts from an external agent. The agent credential is separate from the owner's browser session and cannot approve outlines, accept modules, or record learner answers. The owner must approve the outline and accept the module in the web app.
+Nori accepts course drafts from trusted local agents. It has no authentication: any local process with access to the server can read courses, approve material and submit learner work through the browser API. The agent routes provide a draft workflow, not a security boundary. Do not expose Nori to an untrusted network or agent.
 
-Generate a 32-byte token and its SHA-256 hash on the server (the token is shown once by this command):
-
-```sh
-bun -e 'import { randomBytes } from "node:crypto"; const token = randomBytes(32).toString("hex"); console.log(`Token: ${token}\nSHA-256: ${new Bun.CryptoHasher("sha256").update(token).digest("hex")}`)'
-```
-
-Set `NORI_AGENT_TOKEN_HASH` to the hash and restart Nori. Give the token only to your trusted agent, over a private channel. Treat it as a password; do not put it in a URL or log. Rotating or removing the configured hash and restarting revokes it. The current implementation supports one instance-wide agent credential and has no per-agent expiry or audit log.
-
-All endpoints require `Authorization: Bearer <token>` and JSON request bodies. IDs are returned by the server:
+Agent POST requests require the `X-Nori-Agent: 1` header and JSON request bodies; this header prevents ordinary cross-origin browser forms from invoking the agent API. IDs are returned by the server:
 
 - `POST /api/agent/courses`: `{ "title": "…", "goal": "…" }` creates a draft course.
 - `GET /api/agent/courses/{id}` reads that course's title, goal and outline; for an unaccepted module it also returns `draft.content` and `draft.contentHash`.

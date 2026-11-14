@@ -3,7 +3,7 @@ import { ModuleDraft } from './ModuleDraft'
 
 export type ModuleData = { id: string; accepted: number; contentHash: string; title: string; lessons: { title: string; body: string }[]; exercises: { id: string; type: 'multiple_choice' | 'written' | 'code'; prompt: string; options: string[]; answer?: string; explanation?: string }[]; attempts: { id: string; exercise_id: string | null; exercise_index: number; answer: string; feedback: string; correct: number | null; owner_note: string }[] }
 
-export function ModuleView({ module, busy, post }: { module: ModuleData; busy: boolean; post: (action: string, data: unknown) => Promise<boolean> }) {
+export function ModuleView({ module, busy, post }: { module: ModuleData; busy: boolean; post: (action: string, data: unknown) => Promise<false | { module?: ModuleData }> }) {
   const [answers, setAnswers] = useState<Record<number, string>>({})
   const [notes, setNotes] = useState<Record<string, string>>({})
   async function submit(event: FormEvent<HTMLFormElement>, index: number) {

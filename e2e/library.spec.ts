@@ -1,12 +1,9 @@
 import { test, expect } from '@playwright/test'
 
-test('owner signs in, saves a goal, reloads and signs out', async ({ page }, info) => {
+test('learner saves a goal, studies and resumes', async ({ page }, info) => {
   const title = `Learning ${crypto.randomUUID()}`
   await page.goto('/')
   await expect(page.getByRole('link', { name: 'Nori home' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Welcome back.' })).toBeVisible()
-  await page.getByLabel('Password').fill('test-password-only')
-  await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('heading', { name: 'What you’re learning' })).toBeVisible()
   await page.getByLabel('Topic').fill(title)
   await page.getByLabel('Your learning goal').fill('Explain the concepts and apply them.')
@@ -56,15 +53,12 @@ test('owner signs in, saves a goal, reloads and signs out', async ({ page }, inf
   const exportUrl = await page.getByRole('link', { name: 'Export course' }).getAttribute('href')
   const exported = await page.request.get(exportUrl!)
   expect(await exported.text()).toContain('Foundations revised')
-  await page.getByRole('button', { name: 'Sign out' }).click()
-  await expect(page.getByRole('heading', { name: 'Welcome back.' })).toBeVisible()
 })
 
-test('rejects unauthenticated access and cross-origin writes', async ({ page, request }) => {
-  expect((await request.get('/api/courses')).status()).toBe(401)
+test('rejects cross-origin writes and unexpected hosts', async ({ page, request }) => {
+  expect((await request.get('/api/courses')).status()).toBe(200)
+  expect((await request.get('/api/courses', { headers: { host: 'attacker.invalid' } })).status()).toBe(403)
   await page.goto('/')
-  await page.getByLabel('Password').fill('test-password-only')
-  await page.getByRole('button', { name: 'Sign in' }).click()
   await expect(page.getByRole('heading', { name: 'What you’re learning' })).toBeVisible()
   const result = await page.request.post('/api/courses', { headers: { origin: 'https://attacker.invalid' }, data: { title: 'Forbidden', goal: 'Forbidden' } })
   expect(result.status()).toBe(403)

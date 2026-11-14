@@ -6,13 +6,13 @@ A single learner can run Nori on Bun with one SQLite database, discuss a goal wi
 
 ## Acceptance criteria
 
-1. A fresh installation starts with documented commands, persists its SQLite database across restarts, and provides an authenticated owner session from multiple devices. Provider credentials stay server-side. The production process runs on Bun; document storage, configuration, backup and restore.
+1. A fresh installation starts with documented commands, persists its SQLite database across restarts, and provides a local single-owner interface without a login. Provider credentials stay server-side. The production process runs on Bun; document storage, configuration, backup and restore.
 2. The owner configures an OpenAI-compatible endpoint, discusses a topic, sees an outline and can edit it before approving it. Markdown and PDF are optional sources; generated course content identifies supplied sources where possible and identifies ungrounded content. Errors and unavailable providers are visible.
 3. After outline approval, generation produces the first module's editable lessons and exercises as a draft. The learner reviews and accepts it. Subsequent modules generate on request; a completed lesson is not silently rewritten. Generation and retry must not discard existing drafts or learner work.
 4. A learner can navigate freely, complete a multiple-choice question with immediate deterministic feedback, submit a written response and code for explainable AI feedback, correct an AI judgment, and retry. The MVP does not execute code. Results and completion persist across restart.
 5. A separate assessment can draw from multiple lessons, run timed or untimed, and show results and explanations after submission. Progress is based on recorded work, not inferred mastery.
 6. A contextual tutor can use the current lesson and relevant attempts, and makes its supplied context visible. A learner can propose and review changes to future material.
-7. An authenticated, documented external-agent API creates and revises drafts in the same course model as the built-in flow. The API never completes learning activities for the owner. Export produces readable course files.
+7. A documented local-agent API creates and revises drafts in the same course model as the built-in flow. Agent routes do not expose learning activities; any local process can also access the learner routes. Export produces readable course files.
 8. Desktop and mobile browser checks cover the create → outline → module → exercise → feedback → resume path, including loading, error and empty states. Keyboard access and legible layouts are checked. Use Google Chrome's modern-web-guidance for relevant UI patterns.
 
 ## Architecture and decisions
@@ -21,16 +21,16 @@ A single learner can run Nori on Bun with one SQLite database, discuss a goal wi
 - **Framework decision gate:** TanStack Start + React is the leading candidate. Before committing the application architecture, build and run a production spike on Bun that serves a page and API, reads/writes `bun:sqlite`, survives restart, and streams a response. Check SvelteKit's official Bun adapter against the same criteria if the TanStack path is awkward. Record actual command results and choose based on implementation evidence.
 - **AI boundary:** An OpenAI-compatible server endpoint and model are configured by the operator. AI outputs are validated before persistence. Keep model calls outside SQLite transactions; show failures and permit retries. Do not assume model grading is authoritative.
 - **Interaction:** Course outline, module draft, and accepted learning material are distinct states. Store the learner's work separately from generated content; any revision preserves completed work.
-- **Security:** Authentication is required for browser and agent routes; configure a scoped agent credential separately from the owner session. Do not expose provider secrets to the browser. Avoid claiming public-internet readiness before its actual deployment is reviewed.
+- **Security:** Nori is a trusted local tool without application authentication. Bind the supported production start to loopback, reject unexpected hosts and cross-origin browser writes, and do not expose provider secrets to the browser. Local processes can read and modify all course data, including learner work; the agent routes are a workflow boundary, not an authorization boundary. Remote exposure requires a separately secured access layer.
 
 ## Delivery slices
 
 1. **Framework spike and design contract.** Compare the Bun production paths, choose the framework, document setup and define a desktop/mobile lesson, outline and tutor layout. Verify the production server, SQLite persistence and streaming.
-2. **Foundation.** Configuration, single-owner authentication, database migrations, course library and durable backup instructions. Gate: production restart preserves an owner session's course data, with access denied when unauthenticated.
+2. **Foundation.** Configuration, local-only access, database migrations, course library and durable backup instructions. Gate: production restart preserves an owner session's course data, with cross-origin writes denied.
 3. **Course authoring.** Streaming discussion, outline edit/approval, Markdown/PDF source intake, first-module generation, editable draft and generation errors. Gate: create a small course with a controlled model fixture and reopen its draft after restart.
 4. **Learning and feedback.** Lesson reader, deterministic multiple-choice grading, written/code submission with advisory feedback and corrections, retries and progress. Gate: browser completes one of each and reloads results; no code executes.
 5. **Assessments and tutor.** Timed/untimed multi-lesson exam, review and contextual tutor, future-module generation and reviewable changes. Gate: complete an exam, resume, and inspect tutor context.
-6. **External authoring and portability.** Scoped agent API, documentation and export. Gate: an agent creates a reviewable draft, cannot submit learner work, and exported material is readable outside Nori.
+6. **External authoring and portability.** Local agent API, documentation and export. Gate: an agent creates a reviewable draft and exported material is readable outside Nori.
 7. **Acceptance.** Run the project's checks and a browser journey on desktop and mobile using a real compatible LLM when available. Record model, commands, outcomes, failures, and what was only tested with fixtures. Verify the real production start and persistent volume separately from development.
 
 ## AME research inputs

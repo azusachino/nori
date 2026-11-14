@@ -1,19 +1,9 @@
-import { createHash, timingSafeEqual } from 'node:crypto'
-import { setting } from './config'
+import { createHash } from 'node:crypto'
 import { db } from './db'
 import { readJson } from './input'
 import { parseModule } from './module'
 
-function authorized(request: Request): boolean {
-  const match = request.headers.get('authorization')?.match(/^Bearer ([a-f0-9]{64})$/)
-  const expected = setting('AGENT_TOKEN_HASH')
-  if (!match || !expected || !/^[a-f0-9]{64}$/.test(expected)) return false
-  const actual = createHash('sha256').update(match[1]!).digest()
-  return timingSafeEqual(actual, Buffer.from(expected, 'hex'))
-}
-
 export async function agentApi(request: Request): Promise<Response> {
-  if (!authorized(request)) return Response.json({ error: 'Unauthorized' }, { status: 401 })
   const path = new URL(request.url).pathname
   if (request.method === 'POST' && path === '/api/agent/courses') {
     const body = await readJson(request) as { title?: unknown; goal?: unknown } | null
