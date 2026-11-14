@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test('owner signs in, saves a goal, reloads and signs out', async ({ page }) => {
+test('owner signs in, saves a goal, reloads and signs out', async ({ page }, info) => {
   const title = `Learning ${crypto.randomUUID()}`
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Welcome back.' })).toBeVisible()
@@ -49,8 +49,9 @@ test('owner signs in, saves a goal, reloads and signs out', async ({ page }) => 
   await expect(page.getByText('Your correction: The answer is also valid for this case.')).toBeVisible()
   await page.getByRole('button', { name: '← Your library' }).click()
   await page.getByRole('button', { name: title }).click()
-  await expect(page.getByText('Outline approved')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Foundations revised' })).toBeVisible()
   await expect(page.getByText('Correct. A is correct.')).toBeVisible()
+  await page.screenshot({ path: `.tmp/visual/course-${info.project.name}.png`, fullPage: true })
   const exportUrl = await page.getByRole('link', { name: 'Export course' }).getAttribute('href')
   const exported = await page.request.get(exportUrl!)
   expect(await exported.text()).toContain('Foundations revised')

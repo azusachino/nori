@@ -13,8 +13,8 @@ Set `SAME_AGENT_TOKEN_HASH` to the hash and restart Same. Give the token only to
 All endpoints require `Authorization: Bearer <token>` and JSON request bodies. IDs are returned by the server:
 
 - `POST /api/agent/courses`: `{ "title": "…", "goal": "…" }` creates a draft course.
-- `GET /api/agent/courses/{id}` reads that course's title, goal and outline.
-- `POST /api/agent/courses/{id}/outline`: `{ "outline": "…" }` saves a draft outline until the owner approves it.
+- `GET /api/agent/courses/{id}` reads that course's title, goal and outline; for an unaccepted module it also returns `draft.content` and `draft.contentHash`.
+- `POST /api/agent/courses/{id}/outline`: `{ "outline": "…" }` saves a draft outline until the owner approves it. To revise an existing outline, also provide its exact current text in `expectedOutline`; a stale revision returns 409.
 - After outline approval, `POST /api/agent/courses/{id}/module` creates the first draft module:
 
 ```json
@@ -31,4 +31,4 @@ All endpoints require `Authorization: Bearer <token>` and JSON request bodies. I
 }
 ```
 
-The multiple-choice answer must match one option. Each module must include all three exercise types. The owner reviews and edits the draft in Same before accepting it. The current API does not yet support revising an existing module, source upload, or adding further modules.
+The multiple-choice answer must match one option. Each module must include all three exercise types. The owner reviews and edits the draft in Same before accepting it. To revise an existing draft, read it first, then send the changed `content` and the returned `expectedContentHash` to the same module endpoint. A stale hash returns 409 rather than overwriting changes. The current API does not yet support source upload or adding further modules.

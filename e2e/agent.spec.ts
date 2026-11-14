@@ -24,9 +24,13 @@ test('agent can create drafts but cannot approve or record learner work', async 
     { type: 'code', prompt: 'Write code', options: [], answer: 'Reference', explanation: 'Review it.' },
   ] }
   expect((await request.post(`/api/agent/courses/${course.id}/module`, { headers, data: { content } })).status()).toBe(201)
+  const detail = await (await request.get(`/api/agent/courses/${course.id}`, { headers })).json() as { draft: { content: typeof content; contentHash: string } }
+  detail.draft.content.title = 'Agent module revised'
+  expect((await request.post(`/api/agent/courses/${course.id}/module`, { headers, data: { content: detail.draft.content, expectedContentHash: detail.draft.contentHash } })).status()).toBe(200)
+  expect((await request.post(`/api/agent/courses/${course.id}/module`, { headers, data: { content: detail.draft.content, expectedContentHash: detail.draft.contentHash } })).status()).toBe(409)
   await page.reload()
   await page.getByRole('button', { name: title }).click()
-  await expect(page.getByRole('heading', { name: 'Agent module' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Agent module revised' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Accept module' })).toBeVisible()
   expect((await request.post(`/api/agent/courses/${course.id}/answer`, { headers, data: {} })).status()).toBe(404)
 })

@@ -1,4 +1,4 @@
-export type Exercise = { type: 'multiple_choice' | 'written' | 'code'; prompt: string; options: string[]; answer: string; explanation: string }
+export type Exercise = { id: string; type: 'multiple_choice' | 'written' | 'code'; prompt: string; options: string[]; answer: string; explanation: string }
 export type Module = { title: string; lessons: { title: string; body: string }[]; exercises: Exercise[] }
 
 export function parseModule(input: string): Module {
@@ -30,8 +30,10 @@ export function parseModule(input: string): Module {
       if (option && new RegExp(`^${answer}[.)]\\s`).test(option)) answer = option
     }
     if (exercise.type === 'multiple_choice' && (options.length < 2 || options.length > 8 || !options.includes(answer))) throw new Error('Multiple choice needs options and a matching answer.')
-    return { type: exercise.type as Exercise['type'], prompt: exercise.prompt, options: options as string[], answer, explanation: exercise.explanation }
+    const id = typeof exercise.id === 'string' && /^[0-9a-f-]{36}$/.test(exercise.id) ? exercise.id : crypto.randomUUID()
+    return { id, type: exercise.type as Exercise['type'], prompt: exercise.prompt, options: options as string[], answer, explanation: exercise.explanation }
   })
+  if (new Set(exercises.map((exercise) => exercise.id)).size !== exercises.length) throw new Error('Exercise IDs must be unique.')
   if (!['multiple_choice', 'written', 'code'].every((type) => exercises.some((exercise) => exercise.type === type))) throw new Error('The module needs multiple-choice, written and code exercises.')
   return { title: item.title, lessons, exercises }
 }

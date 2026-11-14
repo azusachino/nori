@@ -43,10 +43,26 @@ db.run(`CREATE TABLE IF NOT EXISTS attempts (
   feedback TEXT NOT NULL,
   correct INTEGER,
   created_at INTEGER NOT NULL,
-  owner_note TEXT NOT NULL DEFAULT ''
+  owner_note TEXT NOT NULL DEFAULT '',
+  exercise_id TEXT
 )`)
 const attemptColumns = db.query('PRAGMA table_info(attempts)').all() as { name: string }[]
 if (!attemptColumns.some((column) => column.name === 'owner_note')) db.run("ALTER TABLE attempts ADD COLUMN owner_note TEXT NOT NULL DEFAULT ''")
+if (!attemptColumns.some((column) => column.name === 'exercise_id')) db.run('ALTER TABLE attempts ADD COLUMN exercise_id TEXT')
+const migrateExerciseIds = db.transaction(() => {
+  const modules = db.query('SELECT id, content FROM modules').all() as { id: string; content: string }[]
+  for (const row of modules) {
+    const content = JSON.parse(row.content) as { exercises?: { id?: string }[] }
+    if (!Array.isArray(content.exercises)) throw new Error('Cannot migrate invalid module exercises')
+    let changed = false
+    content.exercises.forEach((exercise, index) => {
+      if (!exercise.id) { exercise.id = crypto.randomUUID(); changed = true }
+      db.run('UPDATE attempts SET exercise_id = ? WHERE module_id = ? AND exercise_index = ? AND exercise_id IS NULL', [exercise.id, row.id, index])
+    })
+    if (changed) db.run('UPDATE modules SET content = ? WHERE id = ?', [JSON.stringify(content), row.id])
+  }
+})
+migrateExerciseIds()
 db.run(`CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
