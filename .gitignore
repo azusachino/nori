@@ -1,1 +1,10 @@
 .tmp/
+node_modules/
+.output/
+.data/
+.env
+.env.local
+.DS_Store
+src/routeTree.gen.ts
+test-results/
+playwright-report/
