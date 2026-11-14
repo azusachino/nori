@@ -1,11 +1,11 @@
-# Same MVP continuation
+# Nori MVP continuation
 
-Updated 2026-11-14. The owner authorized a Bun + SQLite self-hosted learning app, selected `azusachino/same` as class `live`, and requested a written plan with Herdr Pi peers using Haiku and DeepSeek. The acceptance criteria and ordered slices are in [mvp-plan.md](mvp-plan.md).
+Updated 2026-11-14. The owner authorized a Bun + SQLite self-hosted learning app, selected the project (now `azusachino/nori`) as class `live`, and requested a written plan with Herdr Pi peers using Haiku and DeepSeek. The acceptance criteria and ordered slices are in [mvp-plan.md](mvp-plan.md).
 
 ## Checkpoint
 
-- Workstation catalog onboarding: isolated branch `task/same-onboarding`, commit `55fe224`; the Same checkout is `vendor/same` within that workstation worktree. Root `make validate` failed on existing shared-toolchain mismatches: Cappuccino `rumdl` 0.2 vs 0.3, Cinnamon Python 3.14 vs 3.15 and uv 0.12 vs 0.13. Root `make build-docs` passed. Do not push the catalog PR until its required gate passes; other projects' checkouts are shared and were not edited.
-- Same: branch `task/mvp`, base `8720c1cff5c68599f49def573efd0bbd3430ee19`. Latest actual commit and uncommitted changes must be read from `git status`/`git log`, not inferred from this note.
+- Workstation catalog onboarding: isolated branch `task/same-onboarding`, commit `55fe224`; the Nori checkout is `vendor/nori` within that workstation worktree. Root `make validate` failed on existing shared-toolchain mismatches: Cappuccino `rumdl` 0.2 vs 0.3, Cinnamon Python 3.14 vs 3.15 and uv 0.12 vs 0.13. Root `make build-docs` passed. Do not push the catalog PR until its required gate passes; other projects' checkouts are shared and were not edited.
+- Nori: branch `task/mvp`, base `8720c1cff5c68599f49def573efd0bbd3430ee19`. Latest actual commit and uncommitted changes must be read from `git status`/`git log`, not inferred from this note.
 - Implemented: Bun production build and SQLite, owner password session, goal library, conversation and outline approval, first module generation with a review/edit/accept step, multiple-choice and advisory written/code feedback, corrections, source ingestion for Markdown and PDF, a scoped draft-authoring agent API, and Markdown export. Code is never executed. An OpenAI-compatible model is configured by server environment variables. Source citations are not verified.
 - Checks before the current change: `make check` passed (9 unit tests plus production build and typecheck) and `make e2e` passed 6 Playwright tests across desktop/mobile Chromium with a deterministic model fixture. A later stable-ID migration also passed the same commands. A PDF extraction unit test used a synthetic real PDF. No real model, production reverse proxy, backup restore, or mobile Safari was tested.
 - Framework spike: TanStack Start + Nitro Bun preset built and served a page, preserved SQLite across restart, and streamed a small response. `use client` bundler warnings remain. SvelteKit was compared only from official documentation, not prototyped.

@@ -23,7 +23,7 @@ function Home() {
       if (!response.ok) throw new Error('Could not load your library.')
       setCourses(await response.json())
       setSignedIn(true)
-    } catch { setError('Could not reach Same. Please try again.'); setSignedIn(false) }
+    } catch { setError('Could not reach Nori. Please try again.'); setSignedIn(false) }
   }
   useEffect(() => { void load() }, [])
 
@@ -54,7 +54,7 @@ function Home() {
   }
 
   return <>
-    <header className="topbar"><a className="brand" href="/" aria-label="Same home"><span aria-hidden="true" className="brand-mark">s</span>same<span className="brand-dot">.</span></a><span className="top-caption">A little space to learn</span>{signedIn && <button className="text-button" type="button" onClick={() => void signOut()}>Sign out</button>}</header>
+    <header className="topbar"><a className="brand" href="/" aria-label="Nori home"><span aria-hidden="true" className="brand-mark">n</span>nori<span className="brand-dot">.</span></a><span className="top-caption">A little space to learn</span>{signedIn && <button className="text-button" type="button" onClick={() => void signOut()}>Sign out</button>}</header>
     <main className="page">
       {signedIn === null ? <p>Opening your library…</p> : signedIn === false ? <section className="sign-in"><p className="eyebrow">YOUR LEARNING SPACE</p><h1>Welcome back.</h1><p className="intro">Sign in to pick up where you left off.</p><form onSubmit={(e) => void signIn(e)}><label htmlFor="password">Password</label><input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /><button className="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'} <span aria-hidden="true">↗</span></button></form></section> : selectedId ? <CourseDetail id={selectedId} onBack={() => { setSelectedId(null); void load() }} /> : <>
         <section className="welcome"><div><p className="eyebrow">YOUR LEARNING SPACE <span> / </span> LIBRARY</p><h1>Good to see you<span className="accent">.</span></h1><p className="intro">A place for the things you want to understand.</p></div><div className="date-stamp"><span>YOUR LIBRARY</span><strong>{String(courses?.length ?? 0).padStart(2, '0')}</strong><span>LEARNING GOALS</span></div></section>

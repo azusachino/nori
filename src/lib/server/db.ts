@@ -1,8 +1,9 @@
 import { Database } from 'bun:sqlite'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { databasePath } from './config'
 
-const path = process.env.SAME_DATABASE_PATH || '.data/same.sqlite'
+const path = databasePath()
 mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
 export const db = new Database(path, { create: true })
 chmodSync(path, 0o600)

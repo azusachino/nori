@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test'
 test('owner signs in, saves a goal, reloads and signs out', async ({ page }, info) => {
   const title = `Learning ${crypto.randomUUID()}`
   await page.goto('/')
+  await expect(page.getByRole('link', { name: 'Nori home' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Welcome back.' })).toBeVisible()
   await page.getByLabel('Password').fill('test-password-only')
   await page.getByRole('button', { name: 'Sign in' }).click()

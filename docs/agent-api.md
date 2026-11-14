@@ -1,6 +1,6 @@
 # Agent authoring API
 
-Same can accept course drafts from an external agent. The agent credential is separate from the owner's browser session and cannot approve outlines, accept modules, or record learner answers. The owner must approve the outline and accept the module in the web app.
+Nori can accept course drafts from an external agent. The agent credential is separate from the owner's browser session and cannot approve outlines, accept modules, or record learner answers. The owner must approve the outline and accept the module in the web app.
 
 Generate a 32-byte token and its SHA-256 hash on the server (the token is shown once by this command):
 
@@ -8,7 +8,7 @@ Generate a 32-byte token and its SHA-256 hash on the server (the token is shown 
 bun -e 'import { randomBytes } from "node:crypto"; const token = randomBytes(32).toString("hex"); console.log(`Token: ${token}\nSHA-256: ${new Bun.CryptoHasher("sha256").update(token).digest("hex")}`)'
 ```
 
-Set `SAME_AGENT_TOKEN_HASH` to the hash and restart Same. Give the token only to your trusted agent, over a private channel. Treat it as a password; do not put it in a URL or log. Rotating or removing the configured hash and restarting revokes it. The current implementation supports one instance-wide agent credential and has no per-agent expiry or audit log.
+Set `NORI_AGENT_TOKEN_HASH` to the hash and restart Nori. Give the token only to your trusted agent, over a private channel. Treat it as a password; do not put it in a URL or log. Rotating or removing the configured hash and restarting revokes it. The current implementation supports one instance-wide agent credential and has no per-agent expiry or audit log.
 
 All endpoints require `Authorization: Bearer <token>` and JSON request bodies. IDs are returned by the server:
 
@@ -31,4 +31,4 @@ All endpoints require `Authorization: Bearer <token>` and JSON request bodies. I
 }
 ```
 
-The multiple-choice answer must match one option. Each module must include all three exercise types. The owner reviews and edits the draft in Same before accepting it. To revise an existing draft, read it first, then send the changed `content` and the returned `expectedContentHash` to the same module endpoint. A stale hash returns 409 rather than overwriting changes. The current API does not yet support source upload or adding further modules.
+The multiple-choice answer must match one option. Each module must include all three exercise types. The owner reviews and edits the draft in Nori before accepting it. To revise an existing draft, read it first, then send the changed `content` and the returned `expectedContentHash` to the same module endpoint. A stale hash returns 409 rather than overwriting changes. The current API does not yet support source upload or adding further modules.

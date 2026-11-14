@@ -1,5 +1,5 @@
 {
-  "name": "same",
+  "name": "nori",
   "private": true,
   "type": "module",
   "imports": {
@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "umask 077 && bun --bun vite dev --port 3000",
     "build": "bun --bun vite build",
-    "start": "umask 077 && HOST=${SAME_BIND:-127.0.0.1} bun .output/server/index.mjs",
+    "start": "umask 077 && HOST=${NORI_BIND:-${SAME_BIND:-127.0.0.1}} bun .output/server/index.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

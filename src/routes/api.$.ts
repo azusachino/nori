@@ -55,7 +55,7 @@ async function handle(request: Request): Promise<Response> {
         content.exercises.forEach((exercise, index) => sections.push(`### Exercise ${index + 1}: ${exercise.type}\n\n${exercise.prompt}\n\n${exercise.options.map((option) => `- ${option}`).join('\n')}\n\n**Reference answer:** ${exercise.answer}\n\n${exercise.explanation}`))
       }
       if (sources().length) sections.push(`## Sources\n\n${sources().map((source) => `- ${source.name}`).join('\n')}`)
-      return new Response(sections.join('\n\n') + '\n', { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': 'attachment; filename="same-course.md"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } })
+      return new Response(sections.join('\n\n') + '\n', { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': 'attachment; filename="nori-course.md"', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } })
     }
     if (request.method === 'POST' && action === 'sources') {
       try {

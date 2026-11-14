@@ -13,7 +13,7 @@ export const Route = createRootRoute({
         content: 'width=device-width, initial-scale=1',
       },
       {
-        title: 'Same — your learning space',
+        title: 'Nori — your learning space',
       },
     ],
     links: [

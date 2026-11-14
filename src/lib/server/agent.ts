@@ -1,11 +1,12 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
+import { setting } from './config'
 import { db } from './db'
 import { readJson } from './input'
 import { parseModule } from './module'
 
 function authorized(request: Request): boolean {
   const match = request.headers.get('authorization')?.match(/^Bearer ([a-f0-9]{64})$/)
-  const expected = process.env.SAME_AGENT_TOKEN_HASH
+  const expected = setting('AGENT_TOKEN_HASH')
   if (!match || !expected || !/^[a-f0-9]{64}$/.test(expected)) return false
   const actual = createHash('sha256').update(match[1]!).digest()
   return timingSafeEqual(actual, Buffer.from(expected, 'hex'))

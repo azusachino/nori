@@ -1,8 +1,8 @@
-# Same MVP plan
+# Nori MVP plan
 
 ## Outcome
 
-A single learner can run Same on Bun with one SQLite database, discuss a goal with an LLM, review a course outline, generate the first module, and study it comfortably on desktop or mobile. The app is a calm course reader, with progress, relevant feedback, and contextual help. An external agent can use a documented API to create the same reviewable content. No deployed service or release is implied by this plan.
+A single learner can run Nori on Bun with one SQLite database, discuss a goal with an LLM, review a course outline, generate the first module, and study it comfortably on desktop or mobile. The app is a calm course reader, with progress, relevant feedback, and contextual help. An external agent can use a documented API to create the same reviewable content. No deployed service or release is implied by this plan.
 
 ## Acceptance criteria
 
@@ -30,7 +30,7 @@ A single learner can run Same on Bun with one SQLite database, discuss a goal wi
 3. **Course authoring.** Streaming discussion, outline edit/approval, Markdown/PDF source intake, first-module generation, editable draft and generation errors. Gate: create a small course with a controlled model fixture and reopen its draft after restart.
 4. **Learning and feedback.** Lesson reader, deterministic multiple-choice grading, written/code submission with advisory feedback and corrections, retries and progress. Gate: browser completes one of each and reloads results; no code executes.
 5. **Assessments and tutor.** Timed/untimed multi-lesson exam, review and contextual tutor, future-module generation and reviewable changes. Gate: complete an exam, resume, and inspect tutor context.
-6. **External authoring and portability.** Scoped agent API, documentation and export. Gate: an agent creates a reviewable draft, cannot submit learner work, and exported material is readable outside Same.
+6. **External authoring and portability.** Scoped agent API, documentation and export. Gate: an agent creates a reviewable draft, cannot submit learner work, and exported material is readable outside Nori.
 7. **Acceptance.** Run the project's checks and a browser journey on desktop and mobile using a real compatible LLM when available. Record model, commands, outcomes, failures, and what was only tested with fixtures. Verify the real production start and persistent volume separately from development.
 
 ## AME research inputs
