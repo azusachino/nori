@@ -21,6 +21,14 @@ db.run(`CREATE TABLE IF NOT EXISTS courses (
 const columns = db.query('PRAGMA table_info(courses)').all() as { name: string }[]
 if (!columns.some((column) => column.name === 'outline')) db.run("ALTER TABLE courses ADD COLUMN outline TEXT NOT NULL DEFAULT ''")
 if (!columns.some((column) => column.name === 'outline_approved')) db.run('ALTER TABLE courses ADD COLUMN outline_approved INTEGER NOT NULL DEFAULT 0')
+db.run(`CREATE TABLE IF NOT EXISTS sources (
+  id TEXT PRIMARY KEY,
+  course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  content BLOB NOT NULL,
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+)`)
 db.run(`CREATE TABLE IF NOT EXISTS modules (
   id TEXT PRIMARY KEY,
   course_id TEXT NOT NULL UNIQUE REFERENCES courses(id) ON DELETE CASCADE,
@@ -34,8 +42,11 @@ db.run(`CREATE TABLE IF NOT EXISTS attempts (
   answer TEXT NOT NULL,
   feedback TEXT NOT NULL,
   correct INTEGER,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  owner_note TEXT NOT NULL DEFAULT ''
 )`)
+const attemptColumns = db.query('PRAGMA table_info(attempts)').all() as { name: string }[]
+if (!attemptColumns.some((column) => column.name === 'owner_note')) db.run("ALTER TABLE attempts ADD COLUMN owner_note TEXT NOT NULL DEFAULT ''")
 db.run(`CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,

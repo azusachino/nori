@@ -1,6 +1,6 @@
 # same
 
-A small self-hosted learning space, in development. The current slice provides a private library, planning conversations, editable course outlines, and a generated first module with multiple-choice, written and code exercises. AI feedback is advisory and code is not executed. Exams, source uploads, external-agent authoring and later modules are not implemented yet. See [the MVP plan](docs/mvp-plan.md).
+A small self-hosted learning space, in development. The current slice provides a private library, planning conversations, editable course outlines, and a generated first module with multiple-choice, written and code exercises. AI feedback is advisory and code is not executed. Markdown, text and text-based PDFs (up to 5 MB and 50 pages) can be supplied as source material. A scoped [agent API](docs/agent-api.md) can create drafts for owner review. Courses can be exported as readable Markdown. Exams and later modules are not implemented yet. See [the MVP plan](docs/mvp-plan.md).
 
 ## Run locally
 
@@ -14,7 +14,7 @@ Set `SAME_PASSWORD_HASH` in your environment to the resulting hash. Do not commi
 
 The database defaults to `.data/same.sqlite`. To use another location, set `SAME_DATABASE_PATH`. Set `SAME_ORIGIN` to the exact public origin, including scheme and port, when accessing from another device; use HTTPS for remote access. `SAME_ORIGIN` defaults to `http://localhost:3000`. The production server binds to `127.0.0.1` by default; set `SAME_BIND` explicitly if the reverse proxy must connect over another interface. Terminate HTTPS at a trusted reverse proxy that forwards the original Host header. Do not expose the development server publicly.
 
-To use course planning, set `SAME_LLM_BASE_URL` to an OpenAI-compatible API base (for example, `http://localhost:11434/v1`), `SAME_LLM_MODEL` to your model name, and optionally `SAME_LLM_API_KEY` for a hosted provider. These values stay on the server. Your learning goal and planning conversation are sent to the configured provider. Provider responses are AI-generated and may be inaccurate.
+To use course planning, set `SAME_LLM_BASE_URL` to an OpenAI-compatible API base (for example, `http://localhost:11434/v1`), `SAME_LLM_MODEL` to your model name, and optionally `SAME_LLM_API_KEY` for a hosted provider. These values stay on the server. Your learning goal, planning conversation, and uploaded source text are sent to the configured provider when generating an outline or module. Uploaded original files and extracted text are stored in the SQLite database. Scanned PDFs require OCR before upload. Provider responses are AI-generated and may be inaccurate.
 
 ## Checks
 

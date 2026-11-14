@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test'
+import { createHash } from 'node:crypto'
 
 const origin = 'http://127.0.0.1:3173'
 export default defineConfig({
@@ -20,6 +21,7 @@ export default defineConfig({
       SAME_ORIGIN: origin,
       SAME_LLM_BASE_URL: 'http://127.0.0.1:3174/v1',
       SAME_LLM_MODEL: 'fixture',
+      SAME_AGENT_TOKEN_HASH: createHash('sha256').update('a'.repeat(64)).digest('hex'),
       SAME_DATABASE_PATH: '.tmp/e2e/same.sqlite',
       SAME_PASSWORD_HASH: '$argon2id$v=19$m=65536,t=2,p=1$q8w1RW/zZywCU/1mkKoCd1MYE6rWoFiQOEzGdbjZesc$UDCzqR8LeO3wP8wapjmTiu2LqcoK91wvNMHCHTGds+A',
     },
