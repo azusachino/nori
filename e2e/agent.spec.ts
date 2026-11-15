@@ -70,6 +70,19 @@ test('outline editor detects a newer agent revision after a refresh', async ({ p
   expect(latest.outline).toBe('Agent revision')
 })
 
+test('large multilingual outlines can be revised and approved', async ({ request, baseURL }) => {
+  const agentHeaders = { 'X-Nori-Agent': '1' }
+  const ownerHeaders = { Origin: baseURL! }
+  const course = await (await request.post('/api/agent/courses', { headers: agentHeaders, data: { title: 'Large outline', goal: 'Study this topic.' } })).json() as { id: string }
+  const first = '学'.repeat(19000)
+  const revised = '習'.repeat(19000)
+  const ownerRevision = '学習'.repeat(9500)
+  expect((await request.post(`/api/agent/courses/${course.id}/outline`, { headers: agentHeaders, data: { outline: first } })).status()).toBe(200)
+  expect((await request.post(`/api/agent/courses/${course.id}/outline`, { headers: agentHeaders, data: { outline: revised, expectedOutline: first } })).status()).toBe(200)
+  expect((await request.post(`/api/courses/${course.id}/outline`, { headers: ownerHeaders, data: { outline: ownerRevision, expectedOutline: revised } })).status()).toBe(200)
+  expect((await request.post(`/api/courses/${course.id}/approve`, { headers: ownerHeaders, data: { expectedOutline: ownerRevision } })).status()).toBe(200)
+})
+
 test('learner can remove a source when the model context is too large', async ({ page, request, baseURL }) => {
   const headers = { Origin: baseURL! }
   const title = `Large source ${crypto.randomUUID()}`

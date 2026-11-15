@@ -24,7 +24,7 @@ export async function agentApi(request: Request): Promise<Response> {
   }
   if (request.method === 'POST' && action === 'outline') {
     if (course.outline_approved) return Response.json({ error: 'The owner has already approved this outline.' }, { status: 409 })
-    const body = await readJson(request) as { outline?: unknown; expectedOutline?: unknown } | null
+    const body = await readJson(request, 250000) as { outline?: unknown; expectedOutline?: unknown } | null
     if (typeof body?.outline !== 'string' || !body.outline.trim() || body.outline.length > 20000) return Response.json({ error: 'Invalid outline.' }, { status: 400 })
     if (course.outline && body.expectedOutline !== course.outline) return Response.json({ error: 'Outline changed. Read it again before revising.' }, { status: 409 })
     const result = db.run('UPDATE courses SET outline = ? WHERE id = ? AND outline_approved = 0 AND outline = ?', [body.outline.trim(), id, course.outline])
