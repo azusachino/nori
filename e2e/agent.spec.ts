@@ -28,6 +28,15 @@ test('agent draft routes preserve the review workflow', async ({ request, page }
   await page.reload()
   await page.getByRole('button', { name: title }).click()
   await expect(page.getByRole('heading', { name: 'Agent module revised' })).toBeVisible()
+  await page.getByLabel('Module title').fill('Edited before save')
+  let releaseSave!: () => void
+  const saveGate = new Promise<void>((resolve) => { releaseSave = resolve })
+  await page.route('**/save-module', async (route) => { await saveGate; await route.continue() })
+  await page.getByRole('button', { name: 'Save draft changes' }).click()
+  await expect(page.getByLabel('Module title')).toBeDisabled()
+  releaseSave()
+  await expect(page.getByRole('button', { name: 'Accept module' })).toBeEnabled()
+  await page.unroute('**/save-module')
   await page.getByLabel('Module title').fill('My unsaved edit')
   const latest = await (await request.get(`/api/agent/courses/${course.id}`, { headers })).json() as { draft: { content: typeof content; contentHash: string } }
   latest.draft.content.title = 'Changed elsewhere'
@@ -39,6 +48,26 @@ test('agent draft routes preserve the review workflow', async ({ request, page }
   await expect(page.getByRole('button', { name: 'Save draft changes' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Accept module' })).toBeDisabled()
   expect((await request.post(`/api/agent/courses/${course.id}/answer`, { headers, data: {} })).status()).toBe(404)
+})
+
+test('outline editor detects a newer agent revision after a refresh', async ({ page, request }) => {
+  const headers = { 'X-Nori-Agent': '1' }
+  const title = `Outline race ${crypto.randomUUID()}`
+  const course = await (await request.post('/api/agent/courses', { headers, data: { title, goal: 'Study this topic.' } })).json() as { id: string }
+  expect((await request.post(`/api/agent/courses/${course.id}/outline`, { headers, data: { outline: 'Original outline' } })).status()).toBe(200)
+  await page.goto('/')
+  await page.getByRole('button', { name: title }).click()
+  await page.getByLabel('Edit your outline').fill('My unsaved edit')
+  expect((await request.post(`/api/agent/courses/${course.id}/outline`, { headers, data: { outline: 'Agent revision', expectedOutline: 'Original outline' } })).status()).toBe(200)
+  await page.getByText('Sources (optional)').click()
+  await page.getByLabel('Add a source · up to 5 MB').setInputFiles({ name: 'source.txt', mimeType: 'text/plain', buffer: Buffer.from('Source text') })
+  await page.getByRole('button', { name: 'Add source' }).click()
+  await expect(page.getByRole('alert')).toContainText('outline changed elsewhere')
+  await expect(page.getByLabel('Edit your outline')).toHaveValue('My unsaved edit')
+  await expect(page.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Approve outline' })).toBeDisabled()
+  const latest = await (await request.get(`/api/agent/courses/${course.id}`, { headers })).json() as { outline: string }
+  expect(latest.outline).toBe('Agent revision')
 })
 
 test('learner can remove a source when the model context is too large', async ({ page, request, baseURL }) => {

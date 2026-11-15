@@ -8,13 +8,14 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
   const [message, setMessage] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [outline, setOutline] = useState('')
+  const [outlineBase, setOutlineBase] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   async function load(syncOutline = true) {
     const response = await fetch(`/api/courses/${id}`)
     if (!response.ok) throw new Error('Could not open this course.')
     const value = await response.json() as Course
-    setCourse(value); if (syncOutline) setOutline(value.outline)
+    setCourse(value); if (syncOutline) { setOutline(value.outline); setOutlineBase(value.outline) }
   }
   useEffect(() => { void load().catch((err: Error) => setError(err.message)) }, [id])
   async function post(action: string, data: unknown) {
@@ -56,7 +57,7 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
       <div className="messages" aria-label="Conversation">{course.messages.length === 0 ? <p className="message-hint">Start with what you already know, or ask for a suggested direction.</p> : course.messages.map((item, index) => <article className={`message ${item.role}`} key={index}><p className="course-label">{item.role === 'user' ? 'YOU' : 'YOUR TUTOR'}</p><p>{item.content}</p></article>)}</div>
       <form onSubmit={(event) => void send(event)}><label htmlFor="message">Your message</label><textarea id="message" rows={3} maxLength={4000} value={message} onChange={(event) => setMessage(event.target.value)} required /><button className="primary" disabled={busy}>{busy ? 'Thinking…' : 'Send message'} <span aria-hidden="true">↗</span></button></form>
     </section><aside className="outline-panel"><p className="eyebrow">02 / YOUR OUTLINE</p><h2>A plan to make it yours.</h2><p className="muted">Generate an outline from your goal and conversation, then edit it before approving.</p>
-      {course.outline_approved ? <><p className="approved">Outline approved</p><div className="outline-text">{course.outline}</div>{!course.module && <button className="primary" disabled={busy} type="button" onClick={() => void post('module', {})}>{busy ? 'Preparing module…' : 'Generate first module'} <span aria-hidden="true">↗</span></button>}</> : <>{!course.outline && <button className="secondary" disabled={busy} type="button" onClick={() => void post('outline', { generate: true })}>Generate outline</button>}{course.outline && <form onSubmit={(event) => { event.preventDefault(); void post('outline', { outline, expectedOutline: course.outline }) }}><label htmlFor="outline">Edit your outline</label><textarea id="outline" rows={15} maxLength={20000} value={outline} onChange={(event) => setOutline(event.target.value)} required /><button className="secondary" disabled={busy}>Save changes</button><button className="primary" disabled={busy || outline !== course.outline} type="button" onClick={() => void post('approve', { expectedOutline: course.outline })}>Approve outline <span aria-hidden="true">↗</span></button><p className="aside-note">Save your changes before approving.</p></form>}</>}
+      {course.outline_approved ? <><p className="approved">Outline approved</p><div className="outline-text">{course.outline}</div>{!course.module && <button className="primary" disabled={busy} type="button" onClick={() => void post('module', {})}>{busy ? 'Preparing module…' : 'Generate first module'} <span aria-hidden="true">↗</span></button>}</> : <>{!course.outline && <button className="secondary" disabled={busy} type="button" onClick={() => void post('outline', { generate: true })}>Generate outline</button>}{course.outline && <form onSubmit={(event) => { event.preventDefault(); void post('outline', { outline, expectedOutline: outlineBase }) }}><label htmlFor="outline">Edit your outline</label><textarea id="outline" rows={15} maxLength={20000} value={outline} disabled={busy} onChange={(event) => setOutline(event.target.value)} required /><button className="secondary" disabled={busy || outlineBase !== course.outline}>Save changes</button><button className="primary" disabled={busy || outline !== course.outline || outlineBase !== course.outline} type="button" onClick={() => void post('approve', { expectedOutline: outlineBase })}>Approve outline <span aria-hidden="true">↗</span></button>{outlineBase !== course.outline ? <p className="error" role="alert">The outline changed elsewhere. Copy any edits you want to keep, then reopen the course to review the latest version.</p> : <p className="aside-note">Save your changes before approving.</p>}</form>}</>}
     </aside></div></details>{course.module && <ModuleView module={course.module} busy={busy} post={post} />}{error && <p role="alert" className="error">{error}</p>}
   </section>
 }
