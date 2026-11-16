@@ -11,6 +11,7 @@ export function ModuleView({
   post,
   canGenerateNext,
   onGenerateNext,
+  onOpenAssessments,
   draftState,
   onDraftChange,
   onDraftSaved,
@@ -20,6 +21,7 @@ export function ModuleView({
   post: (action: string, data: unknown) => Promise<false | { module?: ModuleData }>
   canGenerateNext?: boolean
   onGenerateNext?: () => void
+  onOpenAssessments?: () => void
   draftState?: ModuleDraftState
   onDraftChange?: (updated: DraftContent) => void
   onDraftSaved?: (newHash: string) => void
@@ -44,6 +46,23 @@ export function ModuleView({
     ) : <section><p className="eyebrow">PRACTICE</p><h3>Try it for yourself.</h3><p className="muted">{new Set(module.attempts.map((attempt) => attempt.exercise_index)).size} of {module.exercises.length} exercises attempted</p>{module.exercises.map((exercise, index) => {
       const attempts = module.attempts.filter((attempt) => attempt.exercise_id === exercise.id)
       return <form className="exercise" key={exercise.id} onSubmit={(event) => void submit(event, index)}><fieldset><legend>{index + 1}. {exercise.prompt}</legend><p className="course-label">{exercise.type === 'multiple_choice' ? 'MULTIPLE CHOICE' : exercise.type === 'written' ? 'WRITTEN ANSWER' : 'CODE · REVIEW ONLY'}</p>{exercise.type === 'multiple_choice' ? exercise.options.map((option) => <label className="choice" key={option}><input type="radio" name={`exercise-${index}`} value={option} checked={answers[index] === option} onChange={() => setAnswers({ ...answers, [index]: option })} required /><span>{option}</span></label>) : <><label htmlFor={`answer-${index}`}>Your answer</label><Textarea id={`answer-${index}`} rows={exercise.type === 'code' ? 8 : 4} maxLength={10000} value={answers[index] || ''} onChange={(event) => setAnswers({ ...answers, [index]: event.target.value })} required /></>}</fieldset><Button className="secondary" disabled={busy}>Check answer</Button>{attempts.map((attempt, attemptIndex) => <div className="feedback" key={attempt.id}><strong>Attempt {attemptIndex + 1} · {attempt.correct === null ? 'AI feedback · advisory' : 'Feedback'}</strong><p>Your answer: {attempt.answer}</p><p role="status">{attempt.feedback}</p>{attempt.owner_note && <p>Your correction: {attempt.owner_note}</p>}{attempt.correct === null && <><label htmlFor={`note-${attempt.id}`}>Your correction or note</label><Textarea id={`note-${attempt.id}`} rows={2} maxLength={4000} value={notes[attempt.id] || ''} onChange={(event) => setNotes({ ...notes, [attempt.id]: event.target.value })} /><Button className="secondary" type="button" disabled={busy || !notes[attempt.id]?.trim()} onClick={() => void post('feedback', { attemptId: attempt.id, note: notes[attempt.id], moduleId: module.id })}>Save correction</Button></>}</div>)}</form>
-    })}{canGenerateNext && onGenerateNext && <div className="next-module-banner"><div><h4>Ready to continue?</h4><p className="muted">This module is accepted. You can generate the next module based on your outline.</p></div><Button className="primary" disabled={busy} type="button" onClick={onGenerateNext}>{busy ? 'Preparing module…' : 'Generate next module'} <span aria-hidden="true">↗</span></Button></div>}</section>}
+    })}{canGenerateNext && onGenerateNext && (
+      <div className="next-module-banner">
+        <div>
+          <h4>Ready to continue?</h4>
+          <p className="muted">This module is accepted. You can generate the next module based on your outline, or test your understanding with an assessment.</p>
+        </div>
+        <div className="banner-actions">
+          <Button className="primary" disabled={busy} type="button" onClick={onGenerateNext}>
+            {busy ? 'Preparing module…' : 'Generate next module'} <span aria-hidden="true">↗</span>
+          </Button>
+          {onOpenAssessments && (
+            <Button className="secondary" type="button" onClick={onOpenAssessments}>
+              Check understanding in assessments <span aria-hidden="true">→</span>
+            </Button>
+          )}
+        </div>
+      </div>
+    )}</section>}
   </section>
 }

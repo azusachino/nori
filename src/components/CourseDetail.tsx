@@ -4,6 +4,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { useEffect, useState, type FormEvent } from 'react'
 import { ModuleView, type ModuleData } from './ModuleView'
 import type { DraftContent, ModuleDraftState } from './ModuleDraft'
+import { AssessmentManager } from './assessments/AssessmentManager'
+import { AssessmentDetail } from './assessments/AssessmentDetail'
 
 type Course = {
   id: string
@@ -22,6 +24,10 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
   const [course, setCourse] = useState<Course | null>(null)
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null)
   const [draftStates, setDraftStates] = useState<Record<string, ModuleDraftState>>({})
+  const [viewSection, setViewSection] = useState<'modules' | 'assessments'>('modules')
+  const [selectedAssessmentId, setSelectedAssessmentId] = useState<string | null>(null)
+  const [assessmentDirty, setAssessmentDirty] = useState(false)
+  const [assessmentDraftAnswers, setAssessmentDraftAnswers] = useState<Record<string, Record<string, string>>>({})
   const [message, setMessage] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [outline, setOutline] = useState('')
@@ -43,6 +49,19 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
   useEffect(() => {
     void load().catch((err: Error) => setError(err.message))
   }, [id])
+
+  const hasUnsavedModuleDrafts = Object.values(draftStates).some((state) => !state.saved)
+  const hasUnsavedOutline = Boolean(course && !course.outline_approved && outline !== outlineBase)
+  const isCourseDirty = assessmentDirty || hasUnsavedModuleDrafts || hasUnsavedOutline
+
+  useEffect(() => {
+    if (!isCourseDirty) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [isCourseDirty])
 
   async function post(action: string, data: unknown) {
     setBusy(true)
@@ -119,7 +138,7 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
   if (!course) {
     return (
       <section className="course-detail">
-        <Button variant="ghost" className="back text-left p-0 h-auto font-normal hover:bg-transparent hover:underline" type="button" onClick={onBack}>
+        <Button variant="ghost" className="back text-left p-0 h-auto font-normal hover:bg-transparent hover:underline" type="button" onClick={handleLibraryBack}>
           ← Your library
         </Button>
         <p role="status">{error || 'Opening your course…'}</p>
@@ -136,6 +155,7 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
 
   const latestModule = modules.at(-1)
   const canGenerateNext = Boolean(course.outline_approved && latestModule?.accepted)
+  const hasAcceptedModules = modules.some((m) => m.accepted)
 
   const currentDraftState: ModuleDraftState | undefined = activeModule && !activeModule.accepted
     ? (draftStates[activeModule.id] ?? {
@@ -179,10 +199,37 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
     })
   }
 
+  function handleLibraryBack() {
+    if (assessmentDirty) {
+      if (!window.confirm('You have unsaved assessment answers. Do you want to leave your course?')) {
+        return
+      }
+    } else if (hasUnsavedModuleDrafts) {
+      if (!window.confirm('You have unsaved module draft edits. Do you want to leave your course without saving?')) {
+        return
+      }
+    } else if (hasUnsavedOutline) {
+      if (!window.confirm('You have unsaved outline changes. Do you want to leave without saving?')) {
+        return
+      }
+    }
+    onBack()
+  }
+
+  function handleSwitchToModules() {
+    if (assessmentDirty) {
+      if (!window.confirm('You have unsaved assessment answers. Do you want to switch to Modules?')) {
+        return
+      }
+    }
+    setViewSection('modules')
+    setSelectedAssessmentId(null)
+  }
+
   return (
     <section className="course-detail">
       <div className="detail-actions">
-        <Button variant="ghost" className="back text-left p-0 h-auto font-normal hover:bg-transparent hover:underline" type="button" onClick={onBack}>
+        <Button variant="ghost" className="back text-left p-0 h-auto font-normal hover:bg-transparent hover:underline" type="button" onClick={handleLibraryBack}>
           ← Your library
         </Button>
         <a className="export-link" href={`/api/courses/${id}/export`} download>
@@ -309,75 +356,123 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
         </div>
       </details>
 
-      {modules.length > 0 && (
-        <nav className="module-nav" aria-label="Course modules">
-          <div className="module-nav-header">
-            <div>
-              <p className="eyebrow">COURSE MODULES</p>
-              <h3>Progress & Navigation ({modules.length})</h3>
-            </div>
-            {canGenerateNext && (
-              <Button
-                className="primary generate-next-btn"
-                disabled={busy}
-                type="button"
-                onClick={generateNextModule}
-              >
-                {busy ? 'Preparing module…' : 'Generate next module'} <span aria-hidden="true">↗</span>
-              </Button>
-            )}
-          </div>
-          <ul className="module-list">
-            {modules.map((m) => {
-              const isActive = m.id === activeModule?.id
-              const attemptCount = new Set(m.attempts.map((a) => a.exercise_index)).size
-              const isUnsaved = draftStates[m.id] && !draftStates[m.id].saved
-              return (
-                <li key={m.id}>
-                  <button
-                    type="button"
-                    aria-current={isActive ? 'true' : undefined}
-                    className={`module-nav-item ${isActive ? 'active' : ''}`}
-                    onClick={() => setSelectedModuleId(m.id)}
-                  >
-                    <span className="module-nav-position">Module {m.position ?? 1}</span>
-                    <strong className="module-nav-title">{m.title}</strong>
-                    <span className="module-nav-status">
-                      {m.accepted ? (
-                        <>
-                          <span className="badge-accepted">Accepted</span>
-                          <span className="badge-attempts">
-                            {attemptCount} of {m.exercises.length} attempted
-                          </span>
-                        </>
-                      ) : (
-                        <span className="badge-draft">
-                          {isUnsaved ? 'Draft · Unsaved' : 'Draft'}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
+      {hasAcceptedModules && (
+        <nav className="course-view-nav" aria-label="Course section">
+          <button
+            type="button"
+            className={`view-nav-item ${viewSection === 'modules' ? 'active' : ''}`}
+            aria-current={viewSection === 'modules' ? 'true' : undefined}
+            onClick={handleSwitchToModules}
+          >
+            Modules ({modules.length})
+          </button>
+          <button
+            type="button"
+            className={`view-nav-item ${viewSection === 'assessments' ? 'active' : ''}`}
+            aria-current={viewSection === 'assessments' ? 'true' : undefined}
+            onClick={() => setViewSection('assessments')}
+          >
+            Assessments
+          </button>
         </nav>
       )}
 
-      {activeModule && (
-        <div className="module-container">
-          <ModuleView
-            key={activeModule.id}
-            module={activeModule}
-            busy={busy}
-            post={post}
-            canGenerateNext={canGenerateNext && activeModule.id === latestModule?.id}
-            onGenerateNext={generateNextModule}
-            draftState={currentDraftState}
-            onDraftChange={(updated) => handleDraftChange(activeModule.id, updated)}
-            onDraftSaved={(newHash) => handleDraftSaved(activeModule.id, newHash)}
+      {viewSection === 'assessments' ? (
+        selectedAssessmentId ? (
+          <AssessmentDetail
+            courseId={id}
+            assessmentId={selectedAssessmentId}
+            initialAnswers={assessmentDraftAnswers[selectedAssessmentId]}
+            onAnswersChange={(answers) =>
+              setAssessmentDraftAnswers((prev) => ({ ...prev, [selectedAssessmentId]: answers }))
+            }
+            onDirtyChange={setAssessmentDirty}
+            onBack={() => {
+              setAssessmentDirty(false)
+              setSelectedAssessmentId(null)
+            }}
           />
-        </div>
+        ) : (
+          <AssessmentManager
+            courseId={id}
+            acceptedModules={modules.filter((m) => m.accepted)}
+            onSelectAssessment={(assessmentId) => setSelectedAssessmentId(assessmentId)}
+          />
+        )
+      ) : (
+        <>
+          {modules.length > 0 && (
+            <nav className="module-nav" aria-label="Course modules">
+              <div className="module-nav-header">
+                <div>
+                  <p className="eyebrow">COURSE MODULES</p>
+                  <h3>Progress & Navigation ({modules.length})</h3>
+                </div>
+                {canGenerateNext && (
+                  <Button
+                    className="primary generate-next-btn"
+                    disabled={busy}
+                    type="button"
+                    onClick={generateNextModule}
+                  >
+                    {busy ? 'Preparing module…' : 'Generate next module'} <span aria-hidden="true">↗</span>
+                  </Button>
+                )}
+              </div>
+              <ul className="module-list">
+                {modules.map((m) => {
+                  const isActive = m.id === activeModule?.id
+                  const attemptCount = new Set(m.attempts.map((a) => a.exercise_index)).size
+                  const isUnsaved = draftStates[m.id] && !draftStates[m.id].saved
+                  return (
+                    <li key={m.id}>
+                      <button
+                        type="button"
+                        aria-current={isActive ? 'true' : undefined}
+                        className={`module-nav-item ${isActive ? 'active' : ''}`}
+                        onClick={() => setSelectedModuleId(m.id)}
+                      >
+                        <span className="module-nav-position">Module {m.position ?? 1}</span>
+                        <strong className="module-nav-title">{m.title}</strong>
+                        <span className="module-nav-status">
+                          {m.accepted ? (
+                            <>
+                              <span className="badge-accepted">Accepted</span>
+                              <span className="badge-attempts">
+                                {attemptCount} of {m.exercises.length} attempted
+                              </span>
+                            </>
+                          ) : (
+                            <span className="badge-draft">
+                              {isUnsaved ? 'Draft · Unsaved' : 'Draft'}
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </nav>
+          )}
+
+          {activeModule && (
+            <div className="module-container">
+              <ModuleView
+                key={activeModule.id}
+                module={activeModule}
+                busy={busy}
+                post={post}
+                canGenerateNext={canGenerateNext && activeModule.id === latestModule?.id}
+                onGenerateNext={generateNextModule}
+                onOpenAssessments={() => setViewSection('assessments')}
+                draftState={currentDraftState}
+                onDraftChange={(updated) => handleDraftChange(activeModule.id, updated)}
+                onDraftSaved={(newHash) => handleDraftSaved(activeModule.id, newHash)}
+              />
+            </div>
+          )}
+        </>
       )}
 
       {error && <p role="alert" className="error">{error}</p>}
