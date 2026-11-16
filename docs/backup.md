@@ -9,7 +9,8 @@ Create a backup directory outside the database directory and use SQLite's online
 ```sh
 umask 077
 mkdir -p .backups
-sqlite3 .data/nori.sqlite "VACUUM INTO '.backups/nori-$(date +%Y%m%d-%H%M%S).sqlite'"
+BACKUP=".backups/nori-$(date +%Y%m%d-%H%M%S).sqlite"
+sqlite3 .data/nori.sqlite "VACUUM INTO '$BACKUP'"
 ```
 
 `VACUUM INTO` writes one consistent database file and does not require stopping Nori. The equivalent SQLite backup API is:
@@ -17,39 +18,54 @@ sqlite3 .data/nori.sqlite "VACUUM INTO '.backups/nori-$(date +%Y%m%d-%H%M%S).sql
 ```sh
 umask 077
 mkdir -p .backups
-sqlite3 .data/nori.sqlite ".backup '.backups/nori-latest.sqlite'"
+BACKUP=".backups/nori-$(date +%Y%m%d-%H%M%S).sqlite"
+sqlite3 .data/nori.sqlite ".backup '$BACKUP'"
 ```
 
-The `VACUUM INTO` result is a single file with no `-wal` or `-shm` sidecars. Verify it before relying on it:
+The `VACUUM INTO` result is a single file with no `-wal` or `-shm` sidecars. Run this verification in the same shell so `$BACKUP` names the file just produced, before relying on it:
 
 ```sh
-sqlite3 .backups/nori-latest.sqlite "PRAGMA integrity_check; PRAGMA foreign_key_check;"
+sqlite3 "$BACKUP" "PRAGMA integrity_check; PRAGMA foreign_key_check;"
 ```
 
-`PRAGMA integrity_check` should return `ok`; `PRAGMA foreign_key_check` should return no rows. Nori applies any pending schema migrations when it opens the database, including assessment and tutor tables.
+`PRAGMA integrity_check` should return `ok`; `PRAGMA foreign_key_check` should return no rows. Keep `$BACKUP` available for the restore step below (or record its exact path). Nori applies any pending schema migrations when it opens the database, including assessment and tutor tables.
 
 If you use a custom path, replace `.data/nori.sqlite` with that path in every command. Keep backups private: they contain course sources, learner answers, corrections, assessments and tutor conversations, and Nori has no login.
 
 ## Restore with the server stopped
 
 1. Stop the Nori server process first. Never restore or replace the database while it is running.
-2. Move the current database and both WAL sidecars aside, preserving them if you may need to recover:
+2. Create a fresh unique recovery directory and move the current database and both WAL sidecars into it with explicit failure checks. Do not reuse fixed `.pre-restore` names, which could overwrite an earlier recovery copy:
 
    ```sh
-   mv .data/nori.sqlite .data/nori.sqlite.pre-restore
-   mv .data/nori.sqlite-wal .data/nori.sqlite-wal.pre-restore 2>/dev/null || true
-   mv .data/nori.sqlite-shm .data/nori.sqlite-shm.pre-restore 2>/dev/null || true
+   set -e
+   RECOVERY_DIR=$(mktemp -d .data/pre-restore.XXXXXX)
+   test -d "$RECOVERY_DIR"
+   for name in nori.sqlite nori.sqlite-wal nori.sqlite-shm; do
+     if [ -e ".data/$name" ]; then
+       mv ".data/$name" "$RECOVERY_DIR/$name"
+     fi
+   done
+   test ! -e .data/nori.sqlite
+   test ! -e .data/nori.sqlite-wal
+   test ! -e .data/nori.sqlite-shm
+   echo "Previous database files moved to $RECOVERY_DIR"
    ```
 
-   Leaving stale `-wal` or `-shm` files beside a replaced database can apply old frames to the restored file; remove them from the active path.
+   The `set -e` and post-move `test` checks stop the restore if a file cannot be moved or still remains in the active path. Leaving stale `-wal` or `-shm` files beside a replaced database can apply old frames to the restored file.
 
-3. Copy the backup into place, restrict its mode, and start Nori:
+3. Copy the intended, verified backup into place, restrict its mode, and start Nori:
 
    ```sh
-   cp .backups/nori-YYYYMMDD-HHMMSS.sqlite .data/nori.sqlite
+   set -e
+   BACKUP=".backups/nori-YYYYMMDD-HHMMSS.sqlite"  # the verified path from the backup step
+   test -f "$BACKUP"
+   cp "$BACKUP" .data/nori.sqlite
    chmod 600 .data/nori.sqlite
    bun run start
    ```
+
+   Run step 3 in the same shell as step 2 (or set `set -e` again, as shown), so a missing backup or copy failure stops the restore before startup.
 
 A `VACUUM INTO` backup needs no sidecars. If you instead copied a live database directory, the database, `-wal` and `-shm` must have been copied together while the server was stopped, or taken with the backup API; a partial copy is not a valid restore source.
 
