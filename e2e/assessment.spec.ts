@@ -150,14 +150,8 @@ test.describe('Learner assessments', () => {
     const writtenInput = page.getByLabel('Your answer').first()
     await writtenInput.fill('Typed answer while clock was ticking.')
 
-    // Wait 2.5 seconds for server deadline to pass
-    await page.waitForTimeout(2500)
-
-    // Save answer after expiry: server returns 409, UI catches and updates to expired without losing input
-    await page.getByRole('button', { name: 'Save answer' }).nth(1).click()
-
-    // Verify Expired Finalization State
-    await expect(page.getByRole('heading', { name: 'Assessment Finalized on Expiry' })).toBeVisible()
+    // Wait for server deadline to pass and automatic expiry to trigger without any save or click
+    await expect(page.getByRole('heading', { name: 'Assessment Finalized on Expiry' })).toBeVisible({ timeout: 10000 })
     await expect(page.getByText('Deadline passed', { exact: true })).toBeVisible()
     await expect(page.getByText('No manual submission recorded')).toBeVisible()
 
@@ -417,5 +411,180 @@ test.describe('Learner assessments', () => {
     })
     await page.getByRole('button', { name: '← Your library' }).click()
     await expect(page.getByRole('heading', { name: 'What you’re learning' })).toBeVisible()
+  })
+
+  test('F2 regression: updateAnswer does not trigger React state-during-render console error', async ({ page }) => {
+    const consoleErrors: string[] = []
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') {
+        consoleErrors.push(msg.text())
+      }
+    })
+
+    const title = `Console Check ${crypto.randomUUID()}`
+    await page.goto('/')
+    await page.getByLabel('Topic').fill(title)
+    await page.getByLabel('Your learning goal').fill('Verify no console errors on answer updates.')
+    await page.getByRole('button', { name: 'Save learning goal' }).click()
+    await page.getByRole('button', { name: title }).click()
+
+    await page.getByRole('button', { name: 'Generate outline' }).click()
+    await expect(page.getByLabel('Edit your outline')).toBeVisible()
+    await page.getByRole('button', { name: 'Approve outline' }).click()
+    await expect(page.getByText('Outline approved')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Generate first module' }).click()
+    await page.getByRole('button', { name: 'Accept module' }).click()
+
+    await page.getByRole('button', { name: 'Assessments', exact: true }).click()
+    await page.getByRole('button', { name: '+ New assessment' }).click()
+    await page.getByLabel('Title').fill('Console Warning Test')
+    await page.getByRole('button', { name: 'Create assessment' }).click()
+    await page.getByRole('button', { name: 'Start assessment' }).click()
+
+    // Type into written answer input to trigger updateAnswer -> onAnswersChange
+    const written = page.getByLabel('Your answer').first()
+    await written.fill('First update')
+    await written.fill('Second update with more characters')
+
+    // Check multiple choice radio to trigger updateAnswer
+    await page.getByLabel('A', { exact: true }).check()
+
+    // Assert answers reflected in DOM
+    await expect(written).toHaveValue('Second update with more characters')
+    await expect(page.getByLabel('A', { exact: true })).toBeChecked()
+
+    // Ensure no "Cannot update a component while rendering a different component" error occurred
+    const renderPhaseErrors = consoleErrors.filter(
+      (err) => err.includes('Cannot update a component') || err.includes('while rendering a different component')
+    )
+    expect(renderPhaseErrors).toEqual([])
+  })
+
+  test('timed assessment recovers from early active GET response and retries at remainingMs', async ({ page }) => {
+    const title = `Early GET Course ${crypto.randomUUID()}`
+    await page.goto('/')
+    await page.getByLabel('Topic').fill(title)
+    await page.getByLabel('Your learning goal').fill('Verify early GET retry logic.')
+    await page.getByRole('button', { name: 'Save learning goal' }).click()
+    await page.getByRole('button', { name: title }).click()
+
+    await page.getByRole('button', { name: 'Generate outline' }).click()
+    await expect(page.getByLabel('Edit your outline')).toBeVisible()
+    await page.getByRole('button', { name: 'Approve outline' }).click()
+    await expect(page.getByText('Outline approved')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Generate first module' }).click()
+    await page.getByRole('button', { name: 'Accept module' }).click()
+
+    await page.getByRole('button', { name: 'Assessments', exact: true }).click()
+    await page.getByRole('button', { name: '+ New assessment' }).click()
+    await page.getByLabel('Title').fill('Early Expiry Retry Test')
+    await page.getByLabel(/Timed \(Fixed deadline/).check()
+    await page.getByLabel('Duration unit').selectOption('seconds')
+    await page.getByLabel('Duration', { exact: true }).fill('2')
+    await page.getByRole('button', { name: 'Create assessment' }).click()
+
+    await page.getByRole('button', { name: 'Start assessment' }).click()
+    await expect(page.getByRole('timer')).toBeVisible()
+
+    // Type an answer
+    await page.getByLabel('Your answer').first().fill('Early GET preserved draft text.')
+
+    // Intercept GET /api/courses/*/assessments/*
+    // When the deadline GET arrives, if the server returns expired, intercept it once
+    // and return an active response with deadlineAt slightly in the future (300ms from now)
+    let simulatedEarlyCount = 0
+    await page.route('**/api/courses/*/assessments/*', async (route) => {
+      const request = route.request()
+      if (request.method() === 'GET') {
+        const response = await route.fetch()
+        const json = await response.json()
+        if (json.assessment && json.assessment.status === 'expired' && simulatedEarlyCount === 0) {
+          simulatedEarlyCount++
+          const now = Date.now()
+          const simulated = {
+            ...json,
+            assessment: {
+              ...json.assessment,
+              status: 'active',
+              serverNow: now,
+              deadlineAt: now + 300,
+              submittedAt: null,
+              finalizedAt: null,
+            },
+          }
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify(simulated),
+          })
+          return
+        }
+      }
+      await route.continue()
+    })
+
+    // Verify the UI recovers from the early active response, resynchronizes, retries, and finalizes
+    await expect(page.getByRole('heading', { name: 'Assessment Finalized on Expiry' })).toBeVisible({ timeout: 10000 })
+    expect(simulatedEarlyCount).toBe(1)
+    await expect(page.getByText('Early GET preserved draft text.')).toBeVisible()
+    await expect(page.getByText('Unsaved draft at expiry')).toBeVisible()
+  })
+
+  test('timed assessment displays retry banner on network failure during deadline GET and recovers on retry', async ({ page }) => {
+    const title = `Network Failure Course ${crypto.randomUUID()}`
+    await page.goto('/')
+    await page.getByLabel('Topic').fill(title)
+    await page.getByLabel('Your learning goal').fill('Verify network failure retry.')
+    await page.getByRole('button', { name: 'Save learning goal' }).click()
+    await page.getByRole('button', { name: title }).click()
+
+    await page.getByRole('button', { name: 'Generate outline' }).click()
+    await expect(page.getByLabel('Edit your outline')).toBeVisible()
+    await page.getByRole('button', { name: 'Approve outline' }).click()
+    await expect(page.getByText('Outline approved')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Generate first module' }).click()
+    await page.getByRole('button', { name: 'Accept module' }).click()
+
+    await page.getByRole('button', { name: 'Assessments', exact: true }).click()
+    await page.getByRole('button', { name: '+ New assessment' }).click()
+    await page.getByLabel('Title').fill('Network Failure Test')
+    await page.getByLabel(/Timed \(Fixed deadline/).check()
+    await page.getByLabel('Duration unit').selectOption('seconds')
+    await page.getByLabel('Duration', { exact: true }).fill('2')
+    await page.getByRole('button', { name: 'Create assessment' }).click()
+
+    await page.getByRole('button', { name: 'Start assessment' }).click()
+    await expect(page.getByRole('timer')).toBeVisible()
+
+    // Type an answer
+    await page.getByLabel('Your answer').first().fill('Network retry test text.')
+
+    // Intercept deadline GET and abort it once
+    let failedOnce = false
+    await page.route('**/api/courses/*/assessments/*', async (route) => {
+      if (route.request().method() === 'GET' && !failedOnce) {
+        failedOnce = true
+        await route.abort('failed')
+        return
+      }
+      await route.continue()
+    })
+
+    // Expect the failure banner to be visible
+    await expect(page.getByRole('alert')).toContainText(/Failed to finalize automatically/i, { timeout: 10000 })
+    expect(failedOnce).toBe(true)
+
+    // Unroute so subsequent fetch works
+    await page.unroute('**/api/courses/*/assessments/*')
+
+    // Click retry
+    await page.getByRole('button', { name: 'Retry' }).click()
+
+    // Now finalizes cleanly
+    await expect(page.getByRole('heading', { name: 'Assessment Finalized on Expiry' })).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Network retry test text.')).toBeVisible()
   })
 })

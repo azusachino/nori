@@ -29,6 +29,8 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
   const [assessmentDirty, setAssessmentDirty] = useState(false)
   const [assessmentDraftAnswers, setAssessmentDraftAnswers] = useState<Record<string, Record<string, string>>>({})
   const [tutorDraftQuestions, setTutorDraftQuestions] = useState<Record<string, string>>({})
+  const [practiceAnswers, setPracticeAnswers] = useState<Record<string, Record<number, string>>>({})
+  const [practiceNotes, setPracticeNotes] = useState<Record<string, Record<string, string>>>({})
   const [message, setMessage] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [outline, setOutline] = useState('')
@@ -51,10 +53,49 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
     void load().catch((err: Error) => setError(err.message))
   }, [id])
 
+  const currentModules: ModuleData[] = course?.modules && course.modules.length > 0
+    ? course.modules
+    : (course?.module ? [course.module] : [])
+
+  const hasUnsavedPracticeWork = currentModules.some((m) => {
+    if (!m.accepted) return false
+    const modAnswers = practiceAnswers[m.id] ?? {}
+    const modNotes = practiceNotes[m.id] ?? {}
+
+    for (let idx = 0; idx < m.exercises.length; idx++) {
+      const ans = modAnswers[idx]
+      if (ans && ans.trim()) {
+        const exercise = m.exercises[idx]
+        const attempts = m.attempts.filter(
+          (a) => a.exercise_id === exercise?.id || a.exercise_index === idx
+        )
+        const latestAttempt = attempts.at(-1)
+        if (!latestAttempt || latestAttempt.answer.trim() !== ans.trim()) {
+          return true
+        }
+      }
+    }
+
+    for (const a of m.attempts) {
+      if (a.correct === null) {
+        const note = modNotes[a.id]
+        if (note !== undefined && note.trim() !== (a.owner_note || '').trim() && note.trim().length > 0) {
+          return true
+        }
+      }
+    }
+    return false
+  })
+
   const hasUnsavedModuleDrafts = Object.values(draftStates).some((state) => !state.saved)
   const hasUnsavedOutline = Boolean(course && !course.outline_approved && outline !== outlineBase)
   const hasUnsentTutorQuestion = Object.values(tutorDraftQuestions).some((q) => q.trim().length > 0)
-  const isCourseDirty = assessmentDirty || hasUnsavedModuleDrafts || hasUnsavedOutline || hasUnsentTutorQuestion
+  const isCourseDirty =
+    assessmentDirty ||
+    hasUnsavedModuleDrafts ||
+    hasUnsavedOutline ||
+    hasUnsentTutorQuestion ||
+    hasUnsavedPracticeWork
 
   useEffect(() => {
     if (!isCourseDirty) return
@@ -216,6 +257,10 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
       }
     } else if (hasUnsentTutorQuestion) {
       if (!window.confirm('You have an unsent tutor question. Do you want to leave your course without sending?')) {
+        return
+      }
+    } else if (hasUnsavedPracticeWork) {
+      if (!window.confirm('You have unsaved exercise answers or notes. Do you want to leave without saving?')) {
         return
       }
     }
@@ -490,6 +535,20 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
                   setTutorDraftQuestions((prev) => ({ ...prev, [key]: text }))
                 }
                 currentDraftHash={modules.find((m) => !m.accepted)?.contentHash ?? null}
+                practiceAnswers={practiceAnswers[activeModule.id] ?? {}}
+                onPracticeAnswerChange={(index, ans) =>
+                  setPracticeAnswers((prev) => ({
+                    ...prev,
+                    [activeModule.id]: { ...(prev[activeModule.id] ?? {}), [index]: ans },
+                  }))
+                }
+                practiceNotes={practiceNotes[activeModule.id] ?? {}}
+                onPracticeNoteChange={(attemptId, note) =>
+                  setPracticeNotes((prev) => ({
+                    ...prev,
+                    [activeModule.id]: { ...(prev[activeModule.id] ?? {}), [attemptId]: note },
+                  }))
+                }
               />
             </div>
           )}

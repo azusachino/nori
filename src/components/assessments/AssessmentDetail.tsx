@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { AssessmentDetailData } from './types'
 
 export function AssessmentDetail({
@@ -26,8 +26,14 @@ export function AssessmentDetail({
   const [copyError, setCopyError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [autoFinalizeError, setAutoFinalizeError] = useState<string | null>(null)
   const [clockOffset, setClockOffset] = useState(0)
   const [now, setNow] = useState(Date.now())
+
+  const isAutoFinalizingRef = useRef(false)
+  const autoFinalizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   async function handleCopyDraft(itemId: string, text: string) {
     setCopyError(null)
@@ -37,7 +43,8 @@ export function AssessmentDetail({
       }
       await navigator.clipboard.writeText(text)
       setCopiedItemId(itemId)
-      setTimeout(() => setCopiedItemId(null), 2500)
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current)
+      copyTimeoutRef.current = setTimeout(() => setCopiedItemId(null), 2500)
     } catch (err) {
       setCopyError(err instanceof Error ? err.message : 'Could not copy to clipboard.')
     }
@@ -45,12 +52,49 @@ export function AssessmentDetail({
 
   async function load() {
     const fetchStart = Date.now()
-    const response = await fetch(`/api/courses/${courseId}/assessments/${assessmentId}`)
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
+    const response = await fetch(`/api/courses/${courseId}/assessments/${assessmentId}`, {
+      signal: controller.signal,
+    })
     if (!response.ok) throw new Error('Could not open this assessment.')
     const data = (await response.json()) as { assessment: AssessmentDetailData }
     const current = data.assessment
+    const fetchEnd = Date.now()
+    const rtt = Math.max(0, fetchEnd - fetchStart)
+    const estimatedServerNow = current.serverNow + Math.floor(rtt / 2)
+
     setAssessment(current)
-    setClockOffset(current.serverNow - fetchStart)
+    setClockOffset(estimatedServerNow - fetchEnd)
+    setNow(fetchEnd)
+    setAutoFinalizeError(null)
+
+    // Handle early active response or schedule finalization retry
+    if (current.status === 'active' && current.mode === 'timed' && current.deadlineAt) {
+      isAutoFinalizingRef.current = false
+      const remainingServerMs = current.deadlineAt - estimatedServerNow
+      // If client reached deadline or within 500ms of deadline, schedule bounded retry
+      if (remainingServerMs <= 500) {
+        const retryDelay = Math.max(100, Math.min(Math.max(0, remainingServerMs) + 50, 3000))
+        if (autoFinalizeTimeoutRef.current) {
+          clearTimeout(autoFinalizeTimeoutRef.current)
+        }
+        autoFinalizeTimeoutRef.current = setTimeout(() => {
+          void load().catch((err: Error) => {
+            if (err.name !== 'AbortError') {
+              setAutoFinalizeError(err.message)
+            }
+          })
+        }, retryDelay)
+      }
+    } else {
+      if (autoFinalizeTimeoutRef.current) {
+        clearTimeout(autoFinalizeTimeoutRef.current)
+        autoFinalizeTimeoutRef.current = null
+      }
+    }
 
     const loadedAnswers: Record<string, string> = {}
     const initialSaved: Record<string, string> = {}
@@ -68,21 +112,70 @@ export function AssessmentDetail({
   }
 
   useEffect(() => {
-    void load().catch((err: Error) => setError(err.message))
+    isAutoFinalizingRef.current = false
+    setAutoFinalizeError(null)
+    if (autoFinalizeTimeoutRef.current) {
+      clearTimeout(autoFinalizeTimeoutRef.current)
+      autoFinalizeTimeoutRef.current = null
+    }
+    void load().catch((err: Error) => {
+      if (err.name !== 'AbortError') {
+        setError(err.message)
+      }
+    })
+    return () => {
+      abortControllerRef.current?.abort()
+      if (autoFinalizeTimeoutRef.current) {
+        clearTimeout(autoFinalizeTimeoutRef.current)
+        autoFinalizeTimeoutRef.current = null
+      }
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current)
+        copyTimeoutRef.current = null
+      }
+    }
   }, [courseId, assessmentId])
 
   // Timer tick for active timed assessment
   useEffect(() => {
     if (assessment?.status !== 'active' || assessment?.mode !== 'timed' || !assessment.deadlineAt) return
-    const interval = setInterval(() => setNow(Date.now()), 1000)
+    const interval = setInterval(() => setNow(Date.now()), 250)
     return () => clearInterval(interval)
   }, [assessment?.status, assessment?.mode, assessment?.deadlineAt])
 
   const effectiveServerNow = now + clockOffset
-  const remainingSeconds =
+  const remainingMs =
     assessment?.status === 'active' && assessment.mode === 'timed' && assessment.deadlineAt
-      ? Math.max(0, Math.floor((assessment.deadlineAt - effectiveServerNow) / 1000))
+      ? assessment.deadlineAt - effectiveServerNow
       : null
+  const remainingSeconds =
+    remainingMs !== null ? Math.max(0, Math.ceil(remainingMs / 1000)) : null
+  const isDeadlinePassed = remainingMs !== null && remainingMs <= 0
+
+  // Trigger one GET at deadline to finalize on server and display finalized state
+  useEffect(() => {
+    if (
+      assessment?.status === 'active' &&
+      assessment.mode === 'timed' &&
+      assessment.deadlineAt &&
+      isDeadlinePassed &&
+      !isAutoFinalizingRef.current
+    ) {
+      isAutoFinalizingRef.current = true
+      void load().catch((err: Error) => {
+        isAutoFinalizingRef.current = false
+        if (err.name !== 'AbortError') {
+          setAutoFinalizeError(err.message)
+          if (autoFinalizeTimeoutRef.current) {
+            clearTimeout(autoFinalizeTimeoutRef.current)
+          }
+          autoFinalizeTimeoutRef.current = setTimeout(() => {
+            void load().catch(() => {})
+          }, 2500)
+        }
+      })
+    }
+  }, [isDeadlinePassed, assessment?.status, assessment?.mode, assessment?.deadlineAt])
 
   const isFinalized = assessment?.status === 'submitted' || assessment?.status === 'expired'
 
@@ -108,11 +201,8 @@ export function AssessmentDetail({
   }, [isDirty, onDirtyChange])
 
   function updateAnswer(itemId: string, val: string) {
-    setAnswers((prev) => {
-      const next = { ...prev, [itemId]: val }
-      onAnswersChange?.(next)
-      return next
-    })
+    setAnswers((prev) => ({ ...prev, [itemId]: val }))
+    onAnswersChange?.({ ...answers, [itemId]: val })
   }
 
   function handleBack() {
@@ -300,7 +390,32 @@ export function AssessmentDetail({
               <strong>
                 {Math.floor(remainingSeconds / 60)}:{String(remainingSeconds % 60).padStart(2, '0')}
               </strong>
-              {remainingSeconds === 0 && <span className="timer-expired-note">(Deadline passed. Any write will finalize.)</span>}
+              {(remainingSeconds === 0 || isDeadlinePassed) && (
+                <span className="timer-expired-note">
+                  {autoFinalizeError ? '(Deadline reached. Error finalizing.)' : '(Deadline reached. Finalizing…)'}
+                </span>
+              )}
+            </div>
+          )}
+
+          {autoFinalizeError && (
+            <div className="finalize-retry-banner" role="alert">
+              <span>Failed to finalize automatically: {autoFinalizeError}</span>
+              <Button
+                className="secondary"
+                size="sm"
+                type="button"
+                onClick={() => {
+                  setAutoFinalizeError(null)
+                  void load().catch((err: Error) => {
+                    if (err.name !== 'AbortError') {
+                      setAutoFinalizeError(err.message)
+                    }
+                  })
+                }}
+              >
+                Retry
+              </Button>
             </div>
           )}
 
@@ -313,6 +428,7 @@ export function AssessmentDetail({
               const currentVal = answers[item.id] ?? ''
               const isSaved = (savedAnswers[item.id] ?? '') === currentVal && currentVal !== ''
               const isDirty = currentVal !== (savedAnswers[item.id] ?? '')
+              const isTimedExpired = assessment.mode === 'timed' && (remainingSeconds === 0 || isDeadlinePassed)
               return (
                 <article key={item.id} className="assessment-question-card">
                   <div className="question-header">
@@ -332,6 +448,7 @@ export function AssessmentDetail({
                               name={`item-${item.id}`}
                               value={opt}
                               checked={currentVal === opt}
+                              disabled={busy || isTimedExpired}
                               onChange={() => updateAnswer(item.id, opt)}
                             />
                             <span>{opt}</span>
@@ -345,6 +462,7 @@ export function AssessmentDetail({
                           id={`answer-${item.id}`}
                           rows={item.type === 'code' ? 8 : 4}
                           value={currentVal}
+                          disabled={busy || isTimedExpired}
                           onChange={(e) => updateAnswer(item.id, e.target.value)}
                         />
                       </div>
@@ -355,7 +473,7 @@ export function AssessmentDetail({
                     <Button
                       className="secondary"
                       type="button"
-                      disabled={busy || !currentVal.trim()}
+                      disabled={busy || !currentVal.trim() || isTimedExpired}
                       onClick={() => void handleSaveAnswer(item.id)}
                     >
                       Save answer
@@ -378,7 +496,7 @@ export function AssessmentDetail({
                 {Object.keys(savedAnswers).filter((k) => savedAnswers[k]?.trim()).length} of {assessment.items.length} questions saved on server.
               </p>
             </div>
-            <Button className="primary submit-btn" disabled={busy} type="button" onClick={handleSubmit}>
+            <Button className="primary submit-btn" disabled={busy || (assessment.mode === 'timed' && (remainingSeconds === 0 || isDeadlinePassed))} type="button" onClick={handleSubmit}>
               {busy ? 'Submitting…' : 'Submit assessment'} <span aria-hidden="true">↗</span>
             </Button>
           </div>

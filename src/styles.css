@@ -1432,6 +1432,21 @@ input::placeholder, textarea::placeholder {
   color: #647360;
 }
 
+.finalize-retry-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-top: 10px;
+  margin-bottom: 16px;
+  background: #fdf2f2;
+  border: 1px solid #d9534f;
+  border-left: 4px solid #a33824;
+  color: #a33824;
+  font-size: 13px;
+}
+
 .prompt-hidden-notice {
   font-size: 13px;
   color: #7b8877;

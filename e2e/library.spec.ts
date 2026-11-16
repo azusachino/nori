@@ -200,3 +200,97 @@ test('learner creates, reviews and studies multiple modules with navigation and 
   // Screenshot Reloaded Multi-Module View
   await page.screenshot({ path: `.tmp/nori-ui-agy/multimodule-reloaded-${info.project.name}.png`, fullPage: true })
 })
+
+test('F1 regression: unsaved practice answers and notes survive section and module navigation, guarded on exit', async ({ page }) => {
+  const title = `Practice Preserve ${crypto.randomUUID()}`
+  await page.goto('/')
+  await page.getByLabel('Topic').fill(title)
+  await page.getByLabel('Your learning goal').fill('Verify preservation of unsaved practice work across nav.')
+  await page.getByRole('button', { name: 'Save learning goal' }).click()
+  await page.getByRole('button', { name: title }).click()
+
+  // Outline and accept Module 1
+  await page.getByRole('button', { name: 'Generate outline' }).click()
+  await expect(page.getByLabel('Edit your outline')).toBeVisible()
+  await page.getByRole('button', { name: 'Approve outline' }).click()
+  await expect(page.getByText('Outline approved')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Generate first module' }).click()
+  await expect(page.getByLabel('Module title')).toHaveValue('First principles')
+  await page.getByRole('button', { name: 'Accept module' }).click()
+  await expect(page.getByRole('heading', { name: 'First principles' })).toBeVisible()
+
+  // Enter unsaved written and code exercise answers
+  const writtenAnswer = page.getByLabel('Your answer').first()
+  const codeAnswer = page.getByLabel('Your answer').nth(1)
+  await writtenAnswer.fill('UNSAVED-WRITTEN-ANSWER-PRESERVE')
+  await codeAnswer.fill('UNSAVED-CODE-ANSWER-PRESERVE')
+
+  // Listen to dialogs to ensure no modal interrupts section navigation
+  const dialogs: string[] = []
+  const dialogHandler = async (dialog: import('@playwright/test').Dialog) => {
+    dialogs.push(dialog.message())
+    await dialog.dismiss()
+  }
+  page.on('dialog', dialogHandler)
+
+  // Switch to Assessments section: should switch smoothly without dialog
+  await page.getByRole('button', { name: 'Assessments', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Course assessments' })).toBeVisible()
+  expect(dialogs).toHaveLength(0)
+
+  // Switch back to Modules section: unsaved answers must be intact
+  await page.getByRole('button', { name: /^Modules/ }).click()
+  await expect(page.getByRole('heading', { name: 'First principles' })).toBeVisible()
+  await expect(writtenAnswer).toHaveValue('UNSAVED-WRITTEN-ANSWER-PRESERVE')
+  await expect(codeAnswer).toHaveValue('UNSAVED-CODE-ANSWER-PRESERVE')
+
+  // Check answer on written exercise to produce an attempt with advisory feedback
+  await page.getByRole('button', { name: 'Check answer' }).nth(1).click()
+  await expect(page.getByRole('status').first()).toBeVisible()
+
+  // Type an unsaved correction note
+  const noteField = page.getByLabel('Your correction or note').first()
+  await noteField.fill('UNSAVED-CORRECTION-NOTE')
+
+  // Switch to Assessments and back: note must be preserved
+  await page.getByRole('button', { name: 'Assessments', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Course assessments' })).toBeVisible()
+  await page.getByRole('button', { name: /^Modules/ }).click()
+  await expect(page.getByRole('heading', { name: 'First principles' })).toBeVisible()
+  await expect(noteField).toHaveValue('UNSAVED-CORRECTION-NOTE')
+
+  // Stop the general dialog listener before testing specific exit confirmation
+  page.off('dialog', dialogHandler)
+
+  // Exit guard check: clicking ← Your library while unsaved note/answers exist prompts confirmation
+  let libraryDialogTriggered = false
+  page.once('dialog', async (dialog) => {
+    libraryDialogTriggered = true
+    expect(dialog.message()).toContain('unsaved exercise answers or notes')
+    await dialog.dismiss()
+  })
+  await page.getByRole('button', { name: '← Your library' }).click()
+  expect(libraryDialogTriggered).toBe(true)
+
+  // Learner stays on course page
+  await expect(page.getByRole('heading', { name: 'First principles' })).toBeVisible()
+
+  // Save the correction note
+  await page.getByRole('button', { name: 'Save correction' }).first().click()
+  await expect(page.getByText('Your correction: UNSAVED-CORRECTION-NOTE')).toBeVisible()
+
+  // Submit code answer so no unsaved exercises remain
+  await page.getByRole('button', { name: 'Check answer' }).last().click()
+  await expect(page.getByRole('status').last()).toBeVisible()
+
+  // Now exit to library: should proceed cleanly without confirmation dialog
+  let unexpectedDialog = false
+  page.once('dialog', async (dialog) => {
+    unexpectedDialog = true
+    await dialog.dismiss()
+  })
+  await page.getByRole('button', { name: '← Your library' }).click()
+  expect(unexpectedDialog).toBe(false)
+  await expect(page.getByRole('heading', { name: 'What you’re learning' })).toBeVisible()
+})

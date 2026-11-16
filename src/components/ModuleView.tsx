@@ -20,6 +20,10 @@ export function ModuleView({
   tutorDrafts,
   onTutorDraftChange,
   currentDraftHash,
+  practiceAnswers,
+  onPracticeAnswerChange,
+  practiceNotes,
+  onPracticeNoteChange,
 }: {
   module: ModuleData
   busy: boolean
@@ -34,10 +38,33 @@ export function ModuleView({
   tutorDrafts?: Record<string, string>
   onTutorDraftChange?: (key: string, text: string) => void
   currentDraftHash?: string | null
+  practiceAnswers?: Record<number, string>
+  onPracticeAnswerChange?: (index: number, answer: string) => void
+  practiceNotes?: Record<string, string>
+  onPracticeNoteChange?: (attemptId: string, note: string) => void
 }) {
-  const [answers, setAnswers] = useState<Record<number, string>>({})
-  const [notes, setNotes] = useState<Record<string, string>>({})
+  const [localAnswers, setLocalAnswers] = useState<Record<number, string>>({})
+  const [localNotes, setLocalNotes] = useState<Record<string, string>>({})
   const [activeTutorLessonIndex, setActiveTutorLessonIndex] = useState<number | null>(null)
+
+  const answers = practiceAnswers ?? localAnswers
+  const notes = practiceNotes ?? localNotes
+
+  function updateAnswer(index: number, val: string) {
+    if (onPracticeAnswerChange) {
+      onPracticeAnswerChange(index, val)
+    } else {
+      setLocalAnswers((prev) => ({ ...prev, [index]: val }))
+    }
+  }
+
+  function updateNote(attemptId: string, val: string) {
+    if (onPracticeNoteChange) {
+      onPracticeNoteChange(attemptId, val)
+    } else {
+      setLocalNotes((prev) => ({ ...prev, [attemptId]: val }))
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>, index: number) {
     event.preventDefault()
@@ -138,7 +165,7 @@ export function ModuleView({
                           name={`exercise-${index}`}
                           value={option}
                           checked={answers[index] === option}
-                          onChange={() => setAnswers({ ...answers, [index]: option })}
+                          onChange={() => updateAnswer(index, option)}
                           required
                         />
                         <span>{option}</span>
@@ -152,7 +179,7 @@ export function ModuleView({
                         rows={exercise.type === 'code' ? 8 : 4}
                         maxLength={10000}
                         value={answers[index] || ''}
-                        onChange={(event) => setAnswers({ ...answers, [index]: event.target.value })}
+                        onChange={(event) => updateAnswer(index, event.target.value)}
                         required
                       />
                     </>
@@ -179,7 +206,7 @@ export function ModuleView({
                           maxLength={4000}
                           value={notes[attempt.id] || ''}
                           onChange={(event) =>
-                            setNotes({ ...notes, [attempt.id]: event.target.value })
+                            updateNote(attempt.id, event.target.value)
                           }
                         />
                         <Button
