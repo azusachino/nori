@@ -26,6 +26,7 @@
   "devDependencies": {
     "@playwright/test": "1.60.0",
     "@tailwindcss/vite": "4.3.5",
+    "@types/bun": "1.4.4",
     "@types/node": "^22.10.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
