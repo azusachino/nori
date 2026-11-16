@@ -175,6 +175,30 @@ export function migrate(database: Database) {
     UNIQUE(assessment_id, item_id)
   )`)
   database.run('CREATE INDEX IF NOT EXISTS assessments_course ON assessments(course_id)')
+  database.run(`CREATE TABLE IF NOT EXISTS tutor_turns (
+    id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    module_id TEXT NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
+    lesson_index INTEGER NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    context TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`)
+  database.run('CREATE INDEX IF NOT EXISTS tutor_turns_scope ON tutor_turns(module_id, lesson_index, created_at)')
+  database.run(`CREATE TABLE IF NOT EXISTS tutor_proposals (
+    id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    module_id TEXT NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
+    lesson_index INTEGER NOT NULL,
+    turn_id TEXT NOT NULL REFERENCES tutor_turns(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    context TEXT NOT NULL,
+    draft_id TEXT,
+    draft_position INTEGER,
+    draft_content_hash TEXT,
+    created_at INTEGER NOT NULL
+  )`)
 }
 
 export function openDatabase(path: string): Database {

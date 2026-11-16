@@ -1,10 +1,11 @@
 import type { Database } from 'bun:sqlite'
 import { readJson } from './input'
-import { complete, ModelError, withRecentHistory } from './ai'
+import { complete, CONTEXT_LIMIT, ModelError, withRecentHistory } from './ai'
 import { parseModule, type Exercise, type Module } from './module'
 import { parseSource } from './source'
 import { firstModuleRow, hashContent, listModuleRows, moduleRowById, modulesHash, nextPosition, visibleModule, visibleModules, type ModuleRow } from './modules'
 import { advisoryPrompt, assessmentDetail, assessmentItem, assessmentRow, assessmentRows, assessmentSummary, createAssessment, itemAnswer, loadAssessment, saveAssessmentAnswer, startAssessment, storeAdvisoryFeedback, storeAssessmentCorrection, submitAssessment } from './assessments'
+import { proposalDraft, storeTutorExchange, tutorAttempts, tutorContext, tutorPrompt, tutorProposals, tutorRevision, tutorScope, tutorTurns, type TutorDraft } from './tutor'
 
 type CourseRow = { id: string; title: string; goal: string; outline: string; outline_approved: number }
 
@@ -110,7 +111,7 @@ export function createLearnerApi(database: Database, now: () => number = Date.no
       }
       return Response.json({ error: 'Not found' }, { status: 404 })
     }
-    const match = path.match(/^\/api\/courses\/([0-9a-f-]{36})(?:\/(chat|outline|approve|modules|module|save-module|accept|answer|sources|remove-source|export|feedback))?$/)
+    const match = path.match(/^\/api\/courses\/([0-9a-f-]{36})(?:\/(chat|outline|approve|modules|module|save-module|accept|answer|sources|remove-source|export|feedback|tutor))?$/)
     if (!match) return Response.json({ error: 'Not found' }, { status: 404 })
     const [, id, action] = match
     const course = database.query('SELECT id, title, goal, outline, outline_approved FROM courses WHERE id = ?').get(id) as CourseRow | null
@@ -129,6 +130,45 @@ export function createLearnerApi(database: Database, now: () => number = Date.no
       if (typeof moduleId !== 'string') return { row: null, error: Response.json({ error: 'Module not found.' }, { status: 404 }) }
       const row = moduleRowById(database, id, moduleId)
       return row ? { row } : { row: null, error: Response.json({ error: 'Module not found.' }, { status: 404 }) }
+    }
+    if (action === 'tutor') {
+      const url = new URL(request.url)
+      if (request.method === 'GET') {
+        const rawLesson = url.searchParams.get('lessonIndex')
+        const lessonIndex = rawLesson === null || rawLesson === '' ? Number.NaN : Number(rawLesson)
+        const scope = tutorScope(database, id, url.searchParams.get('moduleId'), lessonIndex)
+        if ('error' in scope) return Response.json({ error: scope.error }, { status: scope.status })
+        return Response.json({ moduleId: scope.module.id, lessonIndex: scope.lessonIndex, lessonTitle: scope.lesson.title, contextLimit: CONTEXT_LIMIT, revision: tutorRevision(database, scope.module.id, scope.lessonIndex), turns: tutorTurns(database, scope.module.id, scope.lessonIndex), proposals: tutorProposals(database, scope.module.id, scope.lessonIndex) }, { headers: { 'Cache-Control': 'no-store' } })
+      }
+      if (request.method !== 'POST') return Response.json({ error: 'Not found' }, { status: 404 })
+      const body = await readJson(request, 250000) as { moduleId?: unknown; lessonIndex?: unknown; attemptIds?: unknown; message?: unknown; proposal?: unknown; expectedDraftContentHash?: unknown } | null
+      const scope = tutorScope(database, id, body?.moduleId, body?.lessonIndex)
+      if ('error' in scope) return Response.json({ error: scope.error }, { status: scope.status })
+      const attempts = tutorAttempts(database, scope, body?.attemptIds)
+      if ('error' in attempts) return Response.json({ error: attempts.error }, { status: attempts.status })
+      if (typeof body?.message !== 'string' || !body.message.trim() || body.message.length > 4000) return Response.json({ error: 'Enter a question of up to 4,000 characters.' }, { status: 400 })
+      const proposal = body?.proposal === true
+      let draft: TutorDraft = null
+      let expectedDraftContentHash: string | undefined
+      if (proposal) {
+        if (body?.expectedDraftContentHash !== undefined && typeof body.expectedDraftContentHash !== 'string') return Response.json({ error: 'Invalid draft reference.' }, { status: 400 })
+        expectedDraftContentHash = body?.expectedDraftContentHash as string | undefined
+        const draftResult = proposalDraft(database, id, expectedDraftContentHash)
+        if ('error' in draftResult) return Response.json({ error: draftResult.error }, { status: draftResult.status })
+        draft = draftResult.draft
+      }
+      const history = tutorTurns(database, scope.module.id, scope.lessonIndex)
+      const revision = tutorRevision(database, scope.module.id, scope.lessonIndex)
+      const prompt = tutorPrompt(tutorContext(scope, attempts), history, body.message.trim(), proposal, revision)
+      if ('error' in prompt) return Response.json({ error: prompt.error }, { status: prompt.status })
+      try {
+        const reply = await complete(prompt.messages)
+        const stored = storeTutorExchange(database, { courseId: id, moduleId: scope.module.id, lessonIndex: scope.lessonIndex, message: body.message.trim(), reply, context: prompt.context, draft, proposal, observedRevision: revision, expectedDraftContentHash }, now())
+        if ('error' in stored) return Response.json({ error: stored.error }, { status: stored.status })
+        return Response.json({ reply, context: prompt.context, turns: [stored.userTurn, stored.assistantTurn], proposal: stored.proposal, conversationRevision: prompt.context.conversationRevision })
+      } catch (error) {
+        return Response.json({ error: error instanceof ModelError ? error.message : 'Could not contact the model.' }, { status: 502 })
+      }
     }
     if (!action && request.method === 'GET') {
       const firstRow = first()

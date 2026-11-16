@@ -4,10 +4,10 @@ type Message = { role: 'system' | 'user' | 'assistant'; content: string }
 
 export class ModelError extends Error {}
 
-const contextLimit = 120000
+export const CONTEXT_LIMIT = 120000
 
 export function withRecentHistory(prefix: Message[], history: Message[], suffix: Message[] = []): Message[] {
-  let remaining = contextLimit - [...prefix, ...suffix].reduce((total, message) => total + message.content.length, 0)
+  let remaining = CONTEXT_LIMIT - [...prefix, ...suffix].reduce((total, message) => total + message.content.length, 0)
   let start = history.length
   while (start > 0 && history[start - 1].content.length <= remaining) {
     remaining -= history[--start].content.length
@@ -16,7 +16,7 @@ export function withRecentHistory(prefix: Message[], history: Message[], suffix:
 }
 
 export async function complete(messages: Message[], maxTokens = 2000): Promise<string> {
-  if (messages.reduce((total, message) => total + message.content.length, 0) > contextLimit) throw new ModelError('The material is too long for one request. Remove a source or shorten the conversation or draft outline, then try again.')
+  if (messages.reduce((total, message) => total + message.content.length, 0) > CONTEXT_LIMIT) throw new ModelError('The material is too long for one request. Remove a source or shorten the conversation or draft outline, then try again.')
   const base = setting('LLM_BASE_URL')
   const model = setting('LLM_MODEL')
   if (!base || !model) throw new ModelError('Set NORI_LLM_BASE_URL and NORI_LLM_MODEL to use the tutor.')

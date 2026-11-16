@@ -75,7 +75,7 @@ describe('one-module database migration', () => {
     expect(uniqueIndexColumns(database)).toEqual([['course_id', 'position']])
     expect(database.query('PRAGMA foreign_key_check').all()).toEqual([])
     expect((database.query('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys).toBe(1)
-    expect(database.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('assessments', 'assessment_items', 'assessment_answers', 'assessment_results') ORDER BY name").all()).toEqual([{ name: 'assessment_answers' }, { name: 'assessment_items' }, { name: 'assessment_results' }, { name: 'assessments' }])
+    expect(database.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('assessments', 'assessment_items', 'assessment_answers', 'assessment_results', 'tutor_turns', 'tutor_proposals') ORDER BY name").all()).toEqual([{ name: 'assessment_answers' }, { name: 'assessment_items' }, { name: 'assessment_results' }, { name: 'assessments' }, { name: 'tutor_proposals' }, { name: 'tutor_turns' }])
 
     database.run('INSERT INTO modules (id, course_id, position, content, accepted, created_at) VALUES (?, ?, ?, ?, 0, ?)', ['66666666-6666-4666-8666-666666666666', courseId, 2, before, Date.now()])
     expect(() => database.run('INSERT INTO modules (id, course_id, position, content, accepted, created_at) VALUES (?, ?, ?, ?, 0, ?)', ['77777777-7777-4777-8777-777777777777', courseId, 2, before, Date.now()])).toThrow()

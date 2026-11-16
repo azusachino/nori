@@ -52,4 +52,4 @@ The learner routes gain `modules` (ordered visible modules), `modulesHash` and `
 
 Existing learner calls that omit `moduleId` keep targeting module 1: `save-module`, `accept`, `answer` and `feedback`. Later modules require `moduleId` in the request body. `POST /api/courses/{id}/module` still creates only module 1 and returns 409 when it already exists. This means an old client cannot accept or answer a later module by accident. `moduleId` must belong to the course.
 
-The current API does not yet support source upload through the agent routes. Source upload remains a learner-route feature.
+The current API does not yet support source upload through the agent routes. Source upload remains a learner-route feature. Assessments and the contextual tutor are learner-only; this agent API does not expose learning activities.
