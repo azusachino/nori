@@ -9,7 +9,7 @@ Agent POST requests require the `X-Nori-Agent: 1` header and JSON request bodies
 - `POST /api/agent/courses`: `{ "title": "…", "goal": "…" }` creates a draft course.
 - `GET /api/agent/courses/{id}` reads that course's title, goal and outline. It returns:
   - `modules`: ordered module metadata, `[{ id, position, accepted, acceptedAt, contentHash }]`. An unaccepted draft also includes `content`; accepted modules stay metadata-only so the draft workflow matches the earlier API.
-  - `modulesHash`: a hash of the ordered module IDs, positions and content hashes.
+  - `modulesHash`: a hash of the ordered module IDs, positions, content hashes and acceptance state.
   - `draft`: the single unaccepted module, `{ id, position, content, contentHash }`, or `null`.
 - `POST /api/agent/courses/{id}/outline`: `{ "outline": "…" }` saves a draft outline until the owner approves it. To revise an existing outline, also provide its exact current text in `expectedOutline`; a stale revision returns 409.
 
@@ -26,7 +26,7 @@ For later modules, use the additive collection routes:
 - `GET /api/agent/courses/{id}/modules`: `{ "modules": [...], "modulesHash": "…" }`, in the same shape as `GET /api/agent/courses/{id}`.
 - `POST /api/agent/courses/{id}/modules` with `{ "content": { … } }` creates the next draft module. It requires an approved outline and a latest module that is already accepted; it returns 409 while a draft is pending. A course with no modules accepts this call as module 1. The response is `201` with `{ "module": { … }, "modulesHash": "…" }`.
 - To revise a draft, send `{ "content": { … }, "moduleId": "…", "expectedContentHash": "…" }` to the same route. A stale `expectedContentHash`, a revision of an accepted module, or a missing module returns 409/404 rather than overwriting anything. The response is `200` with `{ "module": { … }, "modulesHash": "…" }`.
-- An optional `expectedModulesHash` guards either operation against another writer changing the ordered modules; a stale value returns 409.
+- An optional `expectedModulesHash` guards either operation against another writer changing the ordered modules, including a draft becoming accepted; a stale value returns 409.
 
 A module body uses the same validated shape as before:
 
@@ -48,7 +48,7 @@ The multiple-choice answer must match one option. Each module must include all t
 
 ## Learner routes and compatibility
 
-The learner routes gain `modules` (ordered visible modules), `modulesHash` and `module` (the first module, kept as a compatibility alias) on `GET /api/courses/{id}`. `POST /api/courses/{id}/modules` generates the next module after the latest one is accepted.
+The learner routes gain `modules` (ordered visible modules), `modulesHash` and `module` (the first module, kept as a compatibility alias) on `GET /api/courses/{id}`. `POST /api/courses/{id}/modules` generates the next module after the latest one is accepted. Generation compares the ordered module IDs, positions, content and acceptance state with the pre-request snapshot and returns 409 if anything changed while the model was running, rather than saving material prompted for the wrong ordinal.
 
 Existing learner calls that omit `moduleId` keep targeting module 1: `save-module`, `accept`, `answer` and `feedback`. Later modules require `moduleId` in the request body. `POST /api/courses/{id}/module` still creates only module 1 and returns 409 when it already exists. This means an old client cannot accept or answer a later module by accident. `moduleId` must belong to the course.
 

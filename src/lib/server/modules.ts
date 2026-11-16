@@ -43,7 +43,7 @@ export function visibleModules(database: Database, courseId: string): VisibleMod
 }
 
 export function modulesHash(rows: ModuleRow[]): string {
-  return hashContent(JSON.stringify(rows.map((row) => ({ id: row.id, position: row.position, contentHash: hashContent(row.content) }))))
+  return hashContent(JSON.stringify(rows.map((row) => ({ id: row.id, position: row.position, contentHash: hashContent(row.content), accepted: row.accepted }))))
 }
 
 export function nextPosition(rows: ModuleRow[]): number {

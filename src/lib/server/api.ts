@@ -132,14 +132,14 @@ export function createLearnerApi(database: Database) {
       const existing = rows()
       const latest = existing.at(-1)
       if (latest && !latest.accepted) return Response.json({ error: 'Review and accept the current module before generating another.' }, { status: 409 })
+      const snapshot = modulesHash(existing)
       try {
         const position = nextPosition(existing)
         const output = await complete(modulePrompt(course, existing, position, sourceContext()), 8192)
         const content = parseModule(output)
         const created = database.transaction(() => {
           const current = listModuleRows(database, id)
-          const last = current.at(-1)
-          if (last && !last.accepted) throw new Error('Review and accept the current module before generating another.')
+          if (modulesHash(current) !== snapshot) throw new Error('The modules changed while generating. Reopen the course and try again.')
           const moduleId = crypto.randomUUID()
           database.run('INSERT INTO modules (id, course_id, position, content, accepted, created_at) VALUES (?, ?, ?, ?, 0, ?)', [moduleId, id, nextPosition(current), JSON.stringify(content), Date.now()])
           return moduleId
@@ -147,7 +147,8 @@ export function createLearnerApi(database: Database) {
         const row = moduleRowById(database, id, created)
         return Response.json({ module: row ? moduleView(row) : null, modules: allVisible(), modulesHash: courseHash() }, { status: 201 })
       } catch (error) {
-        if (error instanceof Error && (error.message === 'Review and accept the current module before generating another.' || error.message.includes('UNIQUE constraint failed'))) return Response.json({ error: 'The modules changed while generating. Reopen the course and try again.' }, { status: 409 })
+        if (error instanceof Error && error.message === 'The modules changed while generating. Reopen the course and try again.') return Response.json({ error: error.message }, { status: 409 })
+        if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) return Response.json({ error: 'The modules changed while generating. Reopen the course and try again.' }, { status: 409 })
         return Response.json({ error: error instanceof ModelError ? error.message : 'Could not generate a valid module. Please try again.' }, { status: 502 })
       }
     }
