@@ -84,3 +84,119 @@ test('rejects cross-origin writes and unexpected hosts', async ({ page, request 
   const result = await page.request.post('/api/courses', { headers: { origin: 'https://attacker.invalid' }, data: { title: 'Forbidden', goal: 'Forbidden' } })
   expect(result.status()).toBe(403)
 })
+
+test('learner creates, reviews and studies multiple modules with navigation and persistence', async ({ page }, info) => {
+  const title = `Multi-Module ${crypto.randomUUID()}`
+  await page.goto('/')
+  await page.getByLabel('Topic').fill(title)
+  await page.getByLabel('Your learning goal').fill('Master multiple modules with distinct exercises.')
+  await page.getByRole('button', { name: 'Save learning goal' }).click()
+  await page.getByRole('button', { name: title }).click()
+
+  // Generate and approve outline
+  await page.getByRole('button', { name: 'Generate outline' }).click()
+  await expect(page.getByLabel('Edit your outline')).toBeVisible()
+  await page.getByRole('button', { name: 'Approve outline' }).click()
+  await expect(page.getByText('Outline approved')).toBeVisible()
+
+  // 1. Generate, review, save, and accept Module 1
+  await page.getByRole('button', { name: 'Generate first module' }).click()
+  await expect(page.getByLabel('Module title')).toHaveValue('First principles')
+  await page.getByLabel('Module title').fill('Foundations of Architecture')
+  await page.getByRole('button', { name: 'Save draft changes' }).click()
+  await page.getByRole('button', { name: 'Accept module' }).click()
+  await expect(page.getByRole('heading', { name: 'Foundations of Architecture' })).toBeVisible()
+
+  // Verify Module 1 nav button has aria-current="true"
+  const mod1Nav = page.getByRole('button', { name: /Module 1/ })
+  await expect(mod1Nav).toHaveAttribute('aria-current', 'true')
+
+  // Answer multiple-choice exercise in Module 1
+  await page.getByLabel('A', { exact: true }).check()
+  await page.getByRole('button', { name: 'Check answer' }).first().click()
+  await expect(page.getByText('Correct. A is correct.')).toBeVisible()
+
+  // 2. Generate Module 2 and verify draft edits are retained when switching away and back
+  await expect(page.getByRole('button', { name: 'Generate next module' }).first()).toBeVisible()
+  await page.getByRole('button', { name: 'Generate next module' }).first().click()
+  await expect(page.getByLabel('Module title')).toHaveValue('Advanced application')
+
+  // Make unsaved edits in Module 2 draft
+  await page.getByLabel('Module title').fill('Applied Systems & Performance (Draft Edits)')
+  await page.getByLabel('Content', { exact: true }).fill('Deep dive with custom unsaved notes.')
+  await expect(page.getByRole('button', { name: 'Save draft changes' })).toBeEnabled()
+
+  // Verify Module 2 button shows unsaved status badge and aria-current="true"
+  const mod2Nav = page.getByRole('button', { name: /Module 2/ })
+  await expect(mod2Nav).toContainText('Draft · Unsaved')
+  await expect(mod2Nav).toHaveAttribute('aria-current', 'true')
+
+  // Switch away to Module 1
+  await mod1Nav.click()
+  await expect(page.getByRole('heading', { name: 'Foundations of Architecture' })).toBeVisible()
+  await expect(mod1Nav).toHaveAttribute('aria-current', 'true')
+  await expect(mod2Nav).not.toHaveAttribute('aria-current', 'true')
+
+  // Switch back to Module 2 and confirm unsaved edits are intact
+  await mod2Nav.click()
+  await expect(mod2Nav).toHaveAttribute('aria-current', 'true')
+  await expect(page.getByLabel('Module title')).toHaveValue('Applied Systems & Performance (Draft Edits)')
+  await expect(page.getByLabel('Content', { exact: true })).toHaveValue('Deep dive with custom unsaved notes.')
+  await expect(page.getByRole('button', { name: 'Save draft changes' })).toBeEnabled()
+
+  // Save draft changes and accept Module 2
+  await page.getByRole('button', { name: 'Save draft changes' }).click()
+  await page.getByRole('button', { name: 'Accept module' }).click()
+  await expect(page.getByRole('heading', { name: 'Applied Systems & Performance (Draft Edits)' })).toBeVisible()
+
+  // Answer multiple-choice exercise in Module 2
+  await page.getByLabel('Strategy A', { exact: true }).check()
+  await page.getByRole('button', { name: 'Check answer' }).first().click()
+  await expect(page.getByText('Correct. Strategy A is optimal.')).toBeVisible()
+
+  // Screenshot Module 2
+  await page.screenshot({ path: `.tmp/nori-ui-agy/multimodule-mod2-${info.project.name}.png`, fullPage: true })
+
+  // 3. Navigate back to Module 1 via module nav buttons
+  await mod1Nav.click()
+  await expect(page.getByRole('heading', { name: 'Foundations of Architecture' })).toBeVisible()
+  // Verify Module 1's previous attempt is preserved
+  await expect(page.getByText('Correct. A is correct.')).toBeVisible()
+  await expect(page.getByText('Your answer: A')).toBeVisible()
+
+  // Screenshot Navigated Back Module 1
+  await page.screenshot({ path: `.tmp/nori-ui-agy/multimodule-back-mod1-${info.project.name}.png`, fullPage: true })
+
+  // Record an answer for written exercise in Module 1
+  await page.getByLabel('Your answer').first().fill('Separation of concerns is essential.')
+  await page.getByRole('button', { name: 'Check answer' }).nth(1).click()
+  await expect(page.getByText('Consider the core idea and add an example.')).toBeVisible()
+  await expect(page.getByText('Your answer: Separation of concerns is essential.')).toBeVisible()
+
+  // 4. Reload the page and reopen course
+  await page.reload()
+  await page.getByRole('button', { name: title }).click()
+
+  // Verify both modules exist as nav list buttons with aria-current states
+  const reloadedMod1 = page.getByRole('button', { name: /Module 1/ })
+  const reloadedMod2 = page.getByRole('button', { name: /Module 2/ })
+  await expect(reloadedMod1).toBeVisible()
+  await expect(reloadedMod2).toBeVisible()
+
+  // Check Module 1 has both attempts preserved and sets aria-current
+  await reloadedMod1.click()
+  await expect(reloadedMod1).toHaveAttribute('aria-current', 'true')
+  await expect(page.getByRole('heading', { name: 'Foundations of Architecture' })).toBeVisible()
+  await expect(page.getByText('Correct. A is correct.')).toBeVisible()
+  await expect(page.getByText('Your answer: Separation of concerns is essential.')).toBeVisible()
+
+  // Check Module 2 has its attempt preserved and sets aria-current
+  await reloadedMod2.click()
+  await expect(reloadedMod2).toHaveAttribute('aria-current', 'true')
+  await expect(page.getByRole('heading', { name: 'Applied Systems & Performance (Draft Edits)' })).toBeVisible()
+  await expect(page.getByText('Correct. Strategy A is optimal.')).toBeVisible()
+  await expect(page.getByText('Your answer: Strategy A')).toBeVisible()
+
+  // Screenshot Reloaded Multi-Module View
+  await page.screenshot({ path: `.tmp/nori-ui-agy/multimodule-reloaded-${info.project.name}.png`, fullPage: true })
+})
