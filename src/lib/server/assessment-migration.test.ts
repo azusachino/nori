@@ -73,6 +73,7 @@ function createLegacyDatabase(path: string, options: { duplicatePosition: boolea
   database.run('INSERT INTO assessment_answers (assessment_id, item_id, answer, updated_at) VALUES (?, ?, ?, ?)', [assessmentId, firstItemId, 'A', 101])
   database.run('INSERT INTO assessment_results (id, assessment_id, item_id, answer, correct, grading, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', ['66666666-6666-4666-8666-666666666666', assessmentId, firstItemId, 'A', 1, 'deterministic', 102])
   database.close()
+  return { firstContent, secondContent }
 }
 
 function uniqueIndexColumns(database: Database) {
@@ -83,12 +84,14 @@ function uniqueIndexColumns(database: Database) {
 describe('assessment item uniqueness migration', () => {
   test('rebuilds legacy items with module-scoped uniqueness while preserving IDs and answer/result references', () => {
     const path = join(directory, 'legacy.sqlite')
-    createLegacyDatabase(path, { duplicatePosition: false })
+    const legacy = createLegacyDatabase(path, { duplicatePosition: false })
     const database = openDatabase(path)
     expect(database.query('SELECT id, assessment_id, position, module_id, exercise_id, exercise_index FROM assessment_items ORDER BY position').all()).toEqual([
       { id: firstItemId, assessment_id: assessmentId, position: 1, module_id: firstModuleId, exercise_id: '55555555-5555-4555-8555-555555555551', exercise_index: 0 },
       { id: secondItemId, assessment_id: assessmentId, position: 2, module_id: secondModuleId, exercise_id: '55555555-5555-4555-8555-555555555552', exercise_index: 0 },
     ])
+    expect(database.query('SELECT content FROM assessment_items WHERE id = ?').get(firstItemId)).toEqual({ content: legacy.firstContent })
+    expect(database.query('SELECT content FROM assessment_items WHERE id = ?').get(secondItemId)).toEqual({ content: legacy.secondContent })
     expect(database.query('SELECT assessment_id, item_id, answer FROM assessment_answers').get()).toEqual({ assessment_id: assessmentId, item_id: firstItemId, answer: 'A' })
     expect(database.query('SELECT assessment_id, item_id, answer, correct, grading FROM assessment_results').get()).toEqual({ assessment_id: assessmentId, item_id: firstItemId, answer: 'A', correct: 1, grading: 'deterministic' })
     expect(uniqueIndexColumns(database)).toEqual(['assessment_id,module_id,exercise_id', 'assessment_id,position'])
