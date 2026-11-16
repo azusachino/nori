@@ -12,6 +12,10 @@ To use course planning, set `NORI_LLM_BASE_URL` to an OpenAI-compatible API base
 
 Existing `SAME_` configuration for the database, origin and model still works after the rename. When both names are set, the corresponding `NORI_` variable takes precedence.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks and pull request guidance. The project does not yet have an open-source license; a public repository alone does not grant permission to reuse or redistribute its code.
+
 ## Checks
 
 - `make check` builds the production application, checks TypeScript and runs backend tests.
