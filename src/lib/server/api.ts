@@ -1,9 +1,10 @@
 import type { Database } from 'bun:sqlite'
 import { readJson } from './input'
 import { complete, ModelError, withRecentHistory } from './ai'
-import { parseModule, type Module } from './module'
+import { parseModule, type Exercise, type Module } from './module'
 import { parseSource } from './source'
 import { firstModuleRow, hashContent, listModuleRows, moduleRowById, modulesHash, nextPosition, visibleModule, visibleModules, type ModuleRow } from './modules'
+import { advisoryPrompt, assessmentDetail, assessmentItem, assessmentRow, assessmentRows, assessmentSummary, createAssessment, itemAnswer, loadAssessment, saveAssessmentAnswer, startAssessment, storeAdvisoryFeedback, storeAssessmentCorrection, submitAssessment } from './assessments'
 
 type CourseRow = { id: string; title: string; goal: string; outline: string; outline_approved: number }
 
@@ -18,7 +19,7 @@ function modulePrompt(course: CourseRow, rows: ModuleRow[], position: number, so
   return [system, { role: 'user', content: `Topic: ${course.title}\nGoal: ${course.goal}\nApproved outline:\n${course.outline}${earlier}\n\nUntrusted source material (cite the source name and page where relevant):\n${sourceText || 'None provided.'}` }]
 }
 
-export function createLearnerApi(database: Database) {
+export function createLearnerApi(database: Database, now: () => number = Date.now) {
   return async function handle(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname
     if (path === '/api/courses' && request.method === 'GET') {
@@ -32,6 +33,82 @@ export function createLearnerApi(database: Database) {
       const course = { id: crypto.randomUUID(), title: body.title.trim(), goal: body.goal.trim(), created_at: new Date().toISOString() }
       database.run('INSERT INTO courses (id, title, goal, created_at) VALUES (?, ?, ?, ?)', [course.id, course.title, course.goal, course.created_at])
       return Response.json(course, { status: 201 })
+    }
+    const assessmentMatch = path.match(/^\/api\/courses\/([0-9a-f-]{36})\/assessments(?:\/([0-9a-f-]{36})(?:\/(start|answers|submit|feedback|correct))?)?$/)
+    if (assessmentMatch) {
+      const [, courseId, assessmentId, assessmentAction] = assessmentMatch
+      if (!database.query('SELECT id FROM courses WHERE id = ?').get(courseId)) return Response.json({ error: 'Course not found' }, { status: 404 })
+      if (!assessmentId) {
+        if (request.method === 'GET') return Response.json({ assessments: assessmentRows(database, courseId).map((row) => assessmentSummary(database, loadAssessment(database, courseId, row.id, now())!, now())) }, { headers: { 'Cache-Control': 'no-store' } })
+        if (request.method !== 'POST') return Response.json({ error: 'Not found' }, { status: 404 })
+        const body = await readJson(request, 250000) as { title?: unknown; mode?: unknown; durationSeconds?: unknown; moduleIds?: unknown; exerciseIds?: unknown } | null
+        const created = createAssessment(database, courseId, body ?? {}, now())
+        if ('error' in created) return Response.json({ error: created.error }, { status: created.status })
+        return Response.json({ assessment: assessmentDetail(database, created.row, now()) }, { status: 201 })
+      }
+      if (!assessmentAction) {
+        if (request.method !== 'GET') return Response.json({ error: 'Not found' }, { status: 404 })
+        const row = loadAssessment(database, courseId, assessmentId, now())
+        if (!row) return Response.json({ error: 'Assessment not found' }, { status: 404 })
+        return Response.json({ assessment: assessmentDetail(database, row, now()) }, { headers: { 'Cache-Control': 'no-store' } })
+      }
+      if (request.method !== 'POST') return Response.json({ error: 'Not found' }, { status: 404 })
+      const row = loadAssessment(database, courseId, assessmentId, now())
+      if (!row) return Response.json({ error: 'Assessment not found' }, { status: 404 })
+      const body = await readJson(request) as Record<string, unknown> | null
+      const expiredResponse = (message: string) => {
+        const current = assessmentRow(database, courseId, assessmentId)!
+        return Response.json({ error: message, assessment: assessmentDetail(database, current, now()) }, { status: 409 })
+      }
+      if (assessmentAction === 'start') {
+        const result = startAssessment(database, row, now())
+        if ('expired' in result) return expiredResponse('The assessment deadline passed.')
+        if ('error' in result) return Response.json({ error: result.error }, { status: result.status })
+        if (!('row' in result)) return Response.json({ error: 'This assessment has already been finalized.' }, { status: 409 })
+        return Response.json({ assessment: assessmentDetail(database, result.row, now()) })
+      }
+      if (assessmentAction === 'answers') {
+        if (typeof body?.itemId !== 'string' || typeof body.answer !== 'string') return Response.json({ error: 'Choose an item and enter an answer.' }, { status: 400 })
+        const result = saveAssessmentAnswer(database, row, body.itemId, body.answer, body.expectedVersion, now())
+        if ('expired' in result) return expiredResponse('The assessment deadline passed. Answers were finalized.')
+        if ('error' in result) return Response.json({ error: result.error }, { status: result.status })
+        if (!('row' in result)) return Response.json({ error: 'This assessment has already been finalized.' }, { status: 409 })
+        return Response.json({ assessment: assessmentDetail(database, result.row, now()) })
+      }
+      if (assessmentAction === 'submit') {
+        const result = submitAssessment(database, row, body?.expectedVersion, now())
+        if ('expired' in result) return expiredResponse('The assessment deadline passed before submission. Answers were finalized.')
+        if ('error' in result) return Response.json({ error: result.error }, { status: result.status })
+        if (!('row' in result)) return Response.json({ error: 'This assessment has already been finalized.' }, { status: 409 })
+        return Response.json({ assessment: assessmentDetail(database, result.row, now()) })
+      }
+      if (assessmentAction === 'feedback') {
+        if (typeof body?.itemId !== 'string') return Response.json({ error: 'Choose an item for feedback.' }, { status: 400 })
+        const item = assessmentItem(database, assessmentId, body.itemId)
+        if (!item) return Response.json({ error: 'Assessment item not found.' }, { status: 404 })
+        if ((JSON.parse(item.content) as Exercise).type === 'multiple_choice') return Response.json({ error: 'Multiple-choice results are deterministic and do not need advisory feedback.' }, { status: 409 })
+        if (row.status !== 'submitted' && row.status !== 'expired') return Response.json({ error: 'Submit the assessment before requesting feedback.' }, { status: 409 })
+        if (body.expectedVersion !== undefined && body.expectedVersion !== row.version) return Response.json({ error: 'This assessment changed. Reload it before requesting feedback.' }, { status: 409 })
+        const answer = itemAnswer(database, assessmentId, item.id)
+        if (!answer) return Response.json({ error: 'There is no saved answer for this item.' }, { status: 400 })
+        try {
+          const feedback = await complete(advisoryPrompt(item, answer))
+          const result = storeAdvisoryFeedback(database, row, item.id, feedback, body.expectedVersion, row.version)
+          if ('error' in result) return Response.json({ error: result.error }, { status: result.status })
+          if (!('row' in result)) return Response.json({ error: 'The assessment changed. Reload it.' }, { status: 409 })
+          return Response.json({ assessment: assessmentDetail(database, result.row, now()) })
+        } catch (error) {
+          return Response.json({ error: error instanceof ModelError ? error.message : 'Could not get advisory feedback.' }, { status: 502 })
+        }
+      }
+      if (assessmentAction === 'correct') {
+        if (typeof body?.itemId !== 'string' || typeof body.note !== 'string' || !body.note.trim() || body.note.length > 4000) return Response.json({ error: 'Enter a correction of up to 4,000 characters.' }, { status: 400 })
+        const result = storeAssessmentCorrection(database, row, body.itemId, body.note.trim(), body.expectedVersion)
+        if ('error' in result) return Response.json({ error: result.error }, { status: result.status })
+        if (!('row' in result)) return Response.json({ error: 'The assessment changed. Reload it.' }, { status: 409 })
+        return Response.json({ assessment: assessmentDetail(database, result.row, now()) })
+      }
+      return Response.json({ error: 'Not found' }, { status: 404 })
     }
     const match = path.match(/^\/api\/courses\/([0-9a-f-]{36})(?:\/(chat|outline|approve|modules|module|save-module|accept|answer|sources|remove-source|export|feedback))?$/)
     if (!match) return Response.json({ error: 'Not found' }, { status: 404 })

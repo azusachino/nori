@@ -127,6 +127,54 @@ export function migrate(database: Database) {
     content TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`)
+  database.run(`CREATE TABLE IF NOT EXISTS assessments (
+    id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK(mode IN ('timed', 'untimed')),
+    duration_seconds INTEGER,
+    status TEXT NOT NULL CHECK(status IN ('planned', 'active', 'submitted', 'expired')),
+    scope TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    deadline_at INTEGER,
+    submitted_at INTEGER,
+    finalized_at INTEGER,
+    version INTEGER NOT NULL DEFAULT 0
+  )`)
+  database.run(`CREATE TABLE IF NOT EXISTS assessment_items (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    module_id TEXT NOT NULL,
+    module_title TEXT NOT NULL,
+    exercise_id TEXT NOT NULL,
+    exercise_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    UNIQUE(assessment_id, position),
+    UNIQUE(assessment_id, exercise_id)
+  )`)
+  database.run(`CREATE TABLE IF NOT EXISTS assessment_answers (
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES assessment_items(id) ON DELETE CASCADE,
+    answer TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(assessment_id, item_id)
+  )`)
+  database.run(`CREATE TABLE IF NOT EXISTS assessment_results (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES assessment_items(id) ON DELETE CASCADE,
+    answer TEXT,
+    correct INTEGER,
+    grading TEXT NOT NULL CHECK(grading IN ('deterministic', 'unscored')),
+    feedback TEXT NOT NULL DEFAULT '',
+    advisory INTEGER NOT NULL DEFAULT 0,
+    owner_note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    UNIQUE(assessment_id, item_id)
+  )`)
+  database.run('CREATE INDEX IF NOT EXISTS assessments_course ON assessments(course_id)')
 }
 
 export function openDatabase(path: string): Database {
