@@ -18,4 +18,4 @@ Existing `SAME_` configuration for the database, origin and model still works af
 - `make e2e-install` installs the Playwright Chromium browser.
 - `make e2e` exercises desktop and mobile planning and practice with a local model fixture, persistence and access control using a disposable database under `.tmp/e2e/`.
 
-Production output is started with `bun run start` after `make build`. Back up the SQLite database with SQLite's online backup API or `VACUUM INTO` while the server runs; copying only the database file while WAL is active can omit data. This initial slice has not yet been tested for a deployed remote proxy or backup restoration.
+Production output is started with `bun run start` after `make build`. [Back up and restore](docs/backup.md) with SQLite's online backup API or `VACUUM INTO` while the server runs, and restore only with the server stopped; copying only the database file while WAL is active can omit data. A scratch automated test covers a live WAL `VACUUM INTO` backup and independent reopen; a deployed proxy or real production restore has not been tested.
