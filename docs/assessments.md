@@ -17,14 +17,16 @@ Create an assessment with `POST /api/courses/{id}/assessments`:
 { "title": "Midpoint check", "mode": "timed", "durationSeconds": 1800, "moduleIds": ["…", "…"], "exerciseIds": ["…"] }
 ```
 
-`moduleIds` must all belong to the course and be accepted; `exerciseIds` is optional and selects a subset. Every chosen exercise is snapshotted in module order, then exercise order. The planned detail already shows the scope (module titles, lesson and exercise counts, prompts and options) but no reference answers or explanations. `GET /api/courses/{id}/assessments` lists summaries; `GET /api/courses/{id}/assessments/{assessmentId}` returns the detail.
+`moduleIds` must all belong to the course and be accepted; `exerciseIds` is optional and selects a subset. Selected modules are snapshotted in course order by module position, ignoring the order of `moduleIds` in the request; exercises follow their order within each module. The planned detail already shows the scope (module titles, lesson and exercise counts, prompts and options) but no reference answers or explanations. `GET /api/courses/{id}/assessments` lists summaries; `GET /api/courses/{id}/assessments/{assessmentId}` returns the detail.
+
+The exercise model is module-level: exercises belong to a module, not to an individual lesson. An assessment can therefore cover modules that contain several lessons, and the scope reports each module's lesson and exercise counts, but it cannot claim question-level lesson attribution. No lesson ID is stored per item.
 
 ## Lifecycle
 
 Statuses are `planned → active → submitted` or `planned → active → expired`.
 
 - `POST .../{assessmentId}/start`: activates a planned assessment. For a timed assessment, `startedAt` and `deadlineAt = startedAt + durationSeconds * 1000` are stored as absolute epoch milliseconds. Starting an active assessment resumes it with the same timestamps; starting a finalized assessment returns 409.
-- `POST .../{assessmentId}/answers` with `{ itemId, answer, expectedVersion? }`: saves an answer while active. Multiple-choice answers must match one option.
+- `POST .../{assessmentId}/answers` with `{ itemId, answer, expectedVersion? }`: saves an answer while active. A multiple-choice answer must match one stored option exactly, including surrounding spaces; free-text answers are trimmed.
 - `POST .../{assessmentId}/submit` with `{ expectedVersion? }`: explicit submission. It freezes results and sets `submittedAt` and `finalizedAt` to the submit time.
 
 Answers and submission are rejected after finalization. Advisory feedback and owner corrections remain available during review (below).
@@ -45,7 +47,7 @@ An expired assessment is reviewed through the normal `GET` detail. Writes to ans
 
 Finalization computes:
 
-- Multiple choice deterministically: `correct` is `1` or `0`. An unanswered multiple-choice item has `answer: null, correct: 0`.
+- Multiple choice deterministically: `correct` is `1` or `0`, comparing the saved answer with the stored option exactly. An unanswered multiple-choice item has `answer: null, correct: 0`.
 - Written and code items are `grading: 'unscored'`, with `correct: null`. They are never given a fabricated score, even when unanswered. Reference answers and explanations become visible only after finalization.
 
 The detail summary contains counts (`answeredCount`, `deterministicTotal`, `deterministicCorrect`, `deterministicIncorrect`, `unscoredCount`), not a percentage or mastery claim. A score is not persisted as mastery.
@@ -64,4 +66,4 @@ Assessments use new tables only. Existing modules, accepted module content and e
 
 Automated checks use an injected clock (`createLearnerApi(database, () => clock)`) and cover: multi-module scope and subset snapshots, unaccepted-module rejection, deadline visibility, answer save and resume after reopening the database, the last second before the deadline versus the exact boundary, explicit submission, untimed assessments that never expire, expiry across restart with `submittedAt = null` and a stable observed `finalizedAt`, idempotent finalization, stale-version conflicts, frozen writes after finalization, advisory feedback/correction labels, late-feedback conflict after a concurrent write, and preserved module/attempt rows.
 
-Advisory feedback tests use a deterministic HTTP model fixture, not a real provider. Expiry tests use a controlled clock, not a wall-clock wait. No real-model assessment review, browser journey, or deployed restart was exercised by these backend tests; the separately owned UI and desktop/mobile journey must be integrated and verified by the UI owner.
+Advisory feedback tests use a deterministic HTTP model fixture, not a real provider. Expiry tests use a controlled clock, not a wall-clock wait. No real-model assessment review, browser journey, or deployed restart was exercised by these backend tests. The assessment learner interface is not integrated yet; the separately owned UI and desktop/mobile journey must be integrated and verified by the UI owner before assessments are presented as a complete user-facing feature.

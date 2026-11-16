@@ -109,22 +109,24 @@ export function createAssessment(database: Database, courseId: string, input: { 
   const selected = input.moduleIds.map((id) => modules.find((module) => module.id === id))
   if (selected.some((module) => !module)) return { error: 'One or more chosen modules were not found.', status: 404 }
   if (selected.some((module) => !module!.accepted)) return { error: 'Accept every chosen module before assessing it.', status: 409 }
+  // Assessments follow course order regardless of the order moduleIds was sent in.
+  const ordered = selected.map((module) => module!).sort((left, right) => left.position - right.position)
   const requestedExercises = input.exerciseIds === undefined ? null : input.exerciseIds
   if (requestedExercises !== null && (!Array.isArray(requestedExercises) || requestedExercises.length === 0 || !requestedExercises.every((id): id is string => typeof id === 'string'))) return { error: 'Choose at least one exercise or omit exerciseIds.', status: 400 }
   const allowedExerciseIds = new Set<string>()
-  for (const module of selected) for (const exercise of (JSON.parse(module!.content) as Module).exercises) allowedExerciseIds.add(exercise.id)
+  for (const module of ordered) for (const exercise of (JSON.parse(module.content) as Module).exercises) allowedExerciseIds.add(exercise.id)
   if (requestedExercises !== null && requestedExercises.some((id) => !allowedExerciseIds.has(id))) return { error: 'One or more chosen exercises are not in the selected modules.', status: 400 }
   const chosen = requestedExercises === null ? null : new Set(requestedExercises)
   const scopeModules: AssessmentScope['modules'] = []
   const items: { moduleId: string; moduleTitle: string; exerciseId: string; exerciseIndex: number; content: Exercise }[] = []
-  for (const module of selected) {
-    const content = JSON.parse(module!.content) as Module
+  for (const module of ordered) {
+    const content = JSON.parse(module.content) as Module
     const exercises = content.exercises.filter((exercise) => chosen === null || chosen.has(exercise.id))
     if (!exercises.length) continue
-    scopeModules.push({ id: module!.id, title: content.title, lessons: content.lessons.length, exercises: exercises.length })
+    scopeModules.push({ id: module.id, title: content.title, lessons: content.lessons.length, exercises: exercises.length })
     content.exercises.forEach((exercise, index) => {
       if (chosen !== null && !chosen.has(exercise.id)) return
-      items.push({ moduleId: module!.id, moduleTitle: content.title, exerciseId: exercise.id, exerciseIndex: index, content: exercise })
+      items.push({ moduleId: module.id, moduleTitle: content.title, exerciseId: exercise.id, exerciseIndex: index, content: exercise })
     })
   }
   if (!items.length) return { error: 'Choose at least one exercise to assess.', status: 400 }
@@ -197,9 +199,14 @@ export function saveAssessmentAnswer(database: Database, row: AssessmentRow, ite
     const item = assessmentItem(database, current.id, itemId)
     if (!item) return { error: 'Assessment item not found.', status: 404 }
     const content = JSON.parse(item.content) as Exercise
-    const value = answer.trim()
-    if (!value || value.length > 10000) return { error: 'Enter an answer of up to 10,000 characters.', status: 400 }
-    if (content.type === 'multiple_choice' && !content.options.includes(value)) return { error: 'Choose an answer from the options.', status: 400 }
+    // Multiple-choice answers must match the stored option exactly, including any surrounding spaces.
+    let value = answer
+    if (content.type === 'multiple_choice') {
+      if (!content.options.includes(answer)) return { error: 'Choose an answer from the options.', status: 400 }
+    } else {
+      value = answer.trim()
+      if (!value || value.length > 10000) return { error: 'Enter an answer of up to 10,000 characters.', status: 400 }
+    }
     database.run('INSERT INTO assessment_answers (assessment_id, item_id, answer, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(assessment_id, item_id) DO UPDATE SET answer = excluded.answer, updated_at = excluded.updated_at', [current.id, item.id, value, now])
     database.run('UPDATE assessments SET version = version + 1 WHERE id = ?', [current.id])
     return { row: assessmentRow(database, current.course_id, current.id)! }

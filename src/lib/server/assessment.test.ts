@@ -54,7 +54,9 @@ function moduleContent(title: string, prefix: string) {
   return { title, lessons: [{ title: `${prefix} lesson`, body: 'Lesson body.' }], exercises: [exercise('multiple_choice', prefix, 1), exercise('written', prefix, 2), exercise('code', prefix, 3)] }
 }
 
-function insertModule(database: Database, courseId: string, position: number, accepted: number, content: ReturnType<typeof moduleContent>) {
+type StoredModule = { title: string; lessons: { title: string; body: string }[]; exercises: { id: string; type: string; prompt: string; options: string[]; answer: string; explanation: string }[] }
+
+function insertModule(database: Database, courseId: string, position: number, accepted: number, content: StoredModule) {
   const id = crypto.randomUUID()
   database.run('INSERT INTO modules (id, course_id, position, content, accepted, created_at) VALUES (?, ?, ?, ?, ?, ?)', [id, courseId, position, JSON.stringify(content), accepted, Date.now()])
   return id
@@ -330,6 +332,53 @@ describe('assessments', () => {
       expect(expired.finalizedAt).toBe(clock)
       expect(database.query('SELECT status, submitted_at FROM assessments WHERE id = ?').get(planned.id)).toEqual({ status: 'expired', submitted_at: null })
       expect((await call(learner, `/api/courses/${courseId}/assessments/${planned.id}/answers`, { itemId: state.items[0]!.id, answer: 'A' })).status).toBe(409)
+    } finally { database.close() }
+  })
+
+  test('snapshots selected modules in course order regardless of request order', async () => {
+    clock = 1_700_350_000_000
+    const { database, learner } = setup()
+    try {
+      const courseId = await createCourse(learner)
+      const firstId = insertModule(database, courseId, 1, 1, moduleContent('Module one', 'first'))
+      const secondId = insertModule(database, courseId, 2, 1, moduleContent('Module two', 'second'))
+      const created = await createAssessment(learner, courseId, { mode: 'untimed', moduleIds: [secondId, firstId] })
+      expect(created.response.status).toBe(201)
+      const assessment = created.body.assessment
+      expect(assessment.scope.modules.map((module) => module.id)).toEqual([firstId, secondId])
+      expect(assessment.items.map((item) => item.moduleId)).toEqual([firstId, firstId, firstId, secondId, secondId, secondId])
+      expect(assessment.items.map((item) => item.position)).toEqual([1, 2, 3, 4, 5, 6])
+    } finally { database.close() }
+  })
+
+  test('preserves exact multiple-choice option text with surrounding spaces', async () => {
+    clock = 1_700_400_000_000
+    const { database, learner } = setup()
+    try {
+      const courseId = await createCourse(learner)
+      const content = {
+        title: 'Spaced module', lessons: [{ title: 'Spacing lesson', body: 'Lesson body.' }],
+        exercises: [
+          { id: crypto.randomUUID(), type: 'multiple_choice', prompt: 'Pick the spaced option', options: [' A ', 'B'], answer: ' A ', explanation: 'The spaced option.' },
+          exercise('written', 'spaced', 2), exercise('code', 'spaced', 3),
+        ],
+      }
+      const moduleId = insertModule(database, courseId, 1, 1, content)
+      const created = await createAssessment(learner, courseId, { mode: 'untimed', moduleIds: [moduleId], exerciseIds: [content.exercises[0]!.id] })
+      expect(created.response.status).toBe(201)
+      const planned = created.body.assessment
+      const started = await call(learner, `/api/courses/${courseId}/assessments/${planned.id}/start`, {})
+      let state = (await json<{ assessment: Detail }>(started)).assessment
+      const accepted = await call(learner, `/api/courses/${courseId}/assessments/${planned.id}/answers`, { itemId: state.items[0]!.id, answer: ' A ', expectedVersion: state.version })
+      expect(accepted.status).toBe(200)
+      state = (await json<{ assessment: Detail }>(accepted)).assessment
+      expect(state.items[0]!.savedAnswer).toBe(' A ')
+      expect((await call(learner, `/api/courses/${courseId}/assessments/${planned.id}/answers`, { itemId: state.items[0]!.id, answer: 'A', expectedVersion: state.version })).status).toBe(400)
+      const submitted = await call(learner, `/api/courses/${courseId}/assessments/${planned.id}/submit`, { expectedVersion: state.version })
+      expect(submitted.status).toBe(200)
+      const result = (await json<{ assessment: Detail }>(submitted)).assessment
+      expect(result.items[0]!.answer).toBe(' A ')
+      expect(result.items[0]!.result).toMatchObject({ answer: ' A ', correct: 1, grading: 'deterministic' })
     } finally { database.close() }
   })
 
