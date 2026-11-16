@@ -13,7 +13,7 @@ afterAll(() => { for (const directory of directories) rmSync(directory, { recurs
 let clock = 1_700_000_000_000
 
 type Learner = ReturnType<typeof createLearnerApi>
-type Item = { id: string; position: number; moduleId: string; type: string; prompt: string; options: string[]; answer?: string; explanation?: string; savedAnswer?: string; result?: { answer: string | null; correct: number | null; grading: string; feedback: string; advisory: boolean; ownerNote: string } | null }
+type Item = { id: string; position: number; moduleId: string; exerciseId: string; type: string; prompt: string; options: string[]; answer?: string; explanation?: string; savedAnswer?: string; result?: { answer: string | null; correct: number | null; grading: string; feedback: string; advisory: boolean; ownerNote: string } | null }
 type Detail = { id: string; status: string; version: number; mode: string; durationSeconds: number | null; startedAt: number | null; deadlineAt: number | null; submittedAt: number | null; finalizedAt: number | null; remainingMs: number | null; scope: { modules: { id: string; title: string; lessons: number; exercises: number }[]; lessonCount: number; exerciseCount: number }; items: Item[]; summary: { itemCount: number; answeredCount: number; deterministicTotal?: number; deterministicCorrect?: number; deterministicIncorrect?: number; unscoredCount?: number } }
 
 function setup() {
@@ -348,6 +348,42 @@ describe('assessments', () => {
       expect(assessment.scope.modules.map((module) => module.id)).toEqual([firstId, secondId])
       expect(assessment.items.map((item) => item.moduleId)).toEqual([firstId, firstId, firstId, secondId, secondId, secondId])
       expect(assessment.items.map((item) => item.position)).toEqual([1, 2, 3, 4, 5, 6])
+    } finally { database.close() }
+  })
+
+  test('allows the same exercise ID across different modules', async () => {
+    clock = 1_700_380_000_000
+    const { database, learner } = setup()
+    try {
+      const courseId = await createCourse(learner)
+      const sharedId = crypto.randomUUID()
+      const first = moduleContent('Module one', 'first')
+      const second = moduleContent('Module two', 'second')
+      first.exercises[0]!.id = sharedId
+      second.exercises[0]!.id = sharedId
+      const firstId = insertModule(database, courseId, 1, 1, first)
+      const secondId = insertModule(database, courseId, 2, 1, second)
+      const created = await createAssessment(learner, courseId, { mode: 'untimed', moduleIds: [firstId, secondId] })
+      expect(created.response.status).toBe(201)
+      const items = created.body.assessment.items
+      expect(items).toHaveLength(6)
+      const shared = items.filter((item) => item.exerciseId === sharedId)
+      expect(shared.map((item) => item.moduleId)).toEqual([firstId, secondId])
+      expect(new Set(shared.map((item) => item.id)).size).toBe(2)
+
+      const subset = await createAssessment(learner, courseId, { mode: 'untimed', moduleIds: [firstId, secondId], exerciseIds: [sharedId] })
+      expect(subset.response.status).toBe(201)
+      expect(subset.body.assessment.items).toHaveLength(2)
+      expect(subset.body.assessment.items.every((item) => item.exerciseId === sharedId)).toBe(true)
+      const planned = subset.body.assessment
+      const started = await call(learner, `/api/courses/${courseId}/assessments/${planned.id}/start`, {})
+      let state = (await json<{ assessment: Detail }>(started)).assessment
+      expect((await call(learner, `/api/courses/${courseId}/assessments/${planned.id}/answers`, { itemId: state.items[0]!.id, answer: 'A', expectedVersion: state.version })).status).toBe(200)
+      state = await detail(learner, courseId, planned.id)
+      const submitted = await call(learner, `/api/courses/${courseId}/assessments/${planned.id}/submit`, { expectedVersion: state.version })
+      expect(submitted.status).toBe(200)
+      const reviewed = (await json<{ assessment: Detail }>(submitted)).assessment
+      expect(reviewed.items.map((item) => item.result?.correct)).toEqual([1, 0])
     } finally { database.close() }
   })
 

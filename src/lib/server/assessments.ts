@@ -132,12 +132,17 @@ export function createAssessment(database: Database, courseId: string, input: { 
   if (!items.length) return { error: 'Choose at least one exercise to assess.', status: 400 }
   const scope: AssessmentScope = { modules: scopeModules, lessonCount: scopeModules.reduce((total, module) => total + module.lessons, 0), exerciseCount: items.length }
   const id = crypto.randomUUID()
-  database.transaction(() => {
-    database.run('INSERT INTO assessments (id, course_id, title, mode, duration_seconds, status, scope, created_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)', [id, courseId, title, mode, duration, 'planned', JSON.stringify(scope), now])
-    items.forEach((item, position) => {
-      database.run('INSERT INTO assessment_items (id, assessment_id, position, module_id, module_title, exercise_id, exercise_index, content) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), id, position + 1, item.moduleId, item.moduleTitle, item.exerciseId, item.exerciseIndex, JSON.stringify(item.content)])
-    })
-  })()
+  try {
+    database.transaction(() => {
+      database.run('INSERT INTO assessments (id, course_id, title, mode, duration_seconds, status, scope, created_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)', [id, courseId, title, mode, duration, 'planned', JSON.stringify(scope), now])
+      items.forEach((item, position) => {
+        database.run('INSERT INTO assessment_items (id, assessment_id, position, module_id, module_title, exercise_id, exercise_index, content) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [crypto.randomUUID(), id, position + 1, item.moduleId, item.moduleTitle, item.exerciseId, item.exerciseIndex, JSON.stringify(item.content)])
+      })
+    })()
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) return { error: 'This exercise selection changed. Reload the course and try again.', status: 409 }
+    throw error
+  }
   return { row: assessmentRow(database, courseId, id)! }
 }
 

@@ -2,6 +2,49 @@ import { Database } from 'bun:sqlite'
 import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 
+function assessmentItemsTable(database: Database, name: string, ifNotExists: boolean) {
+  database.run(`CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${name} (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    module_id TEXT NOT NULL,
+    module_title TEXT NOT NULL,
+    exercise_id TEXT NOT NULL,
+    exercise_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    UNIQUE(assessment_id, position),
+    UNIQUE(assessment_id, module_id, exercise_id)
+  )`)
+}
+
+function legacyAssessmentExerciseIndex(database: Database): boolean {
+  const indexes = database.query('PRAGMA index_list(assessment_items)').all() as { name: string; unique: number }[]
+  return indexes.filter((index) => index.unique).some((index) => {
+    const names = (database.query(`PRAGMA index_info("${index.name.replaceAll('"', '""')}")`).all() as { name: string }[]).map((column) => column.name)
+    return names.length === 2 && names[0] === 'assessment_id' && names[1] === 'exercise_id'
+  })
+}
+
+// An exercise UUID is only unique within its module, so assessment items are unique per module.
+function migrateAssessmentItems(database: Database) {
+  if (!legacyAssessmentExerciseIndex(database)) return
+  database.run('PRAGMA foreign_keys = OFF')
+  try {
+    database.transaction(() => {
+      database.run('DROP TABLE IF EXISTS assessment_items_new')
+      assessmentItemsTable(database, 'assessment_items_new', false)
+      database.run(`INSERT INTO assessment_items_new (id, assessment_id, position, module_id, module_title, exercise_id, exercise_index, content)
+        SELECT id, assessment_id, position, module_id, module_title, exercise_id, exercise_index, content FROM assessment_items`)
+      database.run('DROP TABLE assessment_items')
+      database.run('ALTER TABLE assessment_items_new RENAME TO assessment_items')
+      const violations = database.query('PRAGMA foreign_key_check').all()
+      if (violations.length) throw new Error('Assessment item migration left inconsistent answers or results')
+    })()
+  } finally {
+    database.run('PRAGMA foreign_keys = ON')
+  }
+}
+
 function tableColumns(database: Database, table: string): string[] {
   return (database.query(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((column) => column.name)
 }
@@ -142,18 +185,7 @@ export function migrate(database: Database) {
     finalized_at INTEGER,
     version INTEGER NOT NULL DEFAULT 0
   )`)
-  database.run(`CREATE TABLE IF NOT EXISTS assessment_items (
-    id TEXT PRIMARY KEY,
-    assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
-    position INTEGER NOT NULL,
-    module_id TEXT NOT NULL,
-    module_title TEXT NOT NULL,
-    exercise_id TEXT NOT NULL,
-    exercise_index INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    UNIQUE(assessment_id, position),
-    UNIQUE(assessment_id, exercise_id)
-  )`)
+  assessmentItemsTable(database, 'assessment_items', true)
   database.run(`CREATE TABLE IF NOT EXISTS assessment_answers (
     assessment_id TEXT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
     item_id TEXT NOT NULL REFERENCES assessment_items(id) ON DELETE CASCADE,
@@ -174,6 +206,7 @@ export function migrate(database: Database) {
     created_at INTEGER NOT NULL,
     UNIQUE(assessment_id, item_id)
   )`)
+  migrateAssessmentItems(database)
   database.run('CREATE INDEX IF NOT EXISTS assessments_course ON assessments(course_id)')
   database.run(`CREATE TABLE IF NOT EXISTS tutor_turns (
     id TEXT PRIMARY KEY,
