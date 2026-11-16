@@ -28,6 +28,7 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
   const [selectedAssessmentId, setSelectedAssessmentId] = useState<string | null>(null)
   const [assessmentDirty, setAssessmentDirty] = useState(false)
   const [assessmentDraftAnswers, setAssessmentDraftAnswers] = useState<Record<string, Record<string, string>>>({})
+  const [tutorDraftQuestions, setTutorDraftQuestions] = useState<Record<string, string>>({})
   const [message, setMessage] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [outline, setOutline] = useState('')
@@ -52,7 +53,8 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
 
   const hasUnsavedModuleDrafts = Object.values(draftStates).some((state) => !state.saved)
   const hasUnsavedOutline = Boolean(course && !course.outline_approved && outline !== outlineBase)
-  const isCourseDirty = assessmentDirty || hasUnsavedModuleDrafts || hasUnsavedOutline
+  const hasUnsentTutorQuestion = Object.values(tutorDraftQuestions).some((q) => q.trim().length > 0)
+  const isCourseDirty = assessmentDirty || hasUnsavedModuleDrafts || hasUnsavedOutline || hasUnsentTutorQuestion
 
   useEffect(() => {
     if (!isCourseDirty) return
@@ -212,6 +214,10 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
       if (!window.confirm('You have unsaved outline changes. Do you want to leave without saving?')) {
         return
       }
+    } else if (hasUnsentTutorQuestion) {
+      if (!window.confirm('You have an unsent tutor question. Do you want to leave your course without sending?')) {
+        return
+      }
     }
     onBack()
   }
@@ -224,6 +230,15 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
     }
     setViewSection('modules')
     setSelectedAssessmentId(null)
+  }
+
+  function handleSwitchToAssessments() {
+    if (hasUnsentTutorQuestion) {
+      if (!window.confirm('You have an unsent tutor question. Do you want to switch to Assessments?')) {
+        return
+      }
+    }
+    setViewSection('assessments')
   }
 
   return (
@@ -370,7 +385,7 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
             type="button"
             className={`view-nav-item ${viewSection === 'assessments' ? 'active' : ''}`}
             aria-current={viewSection === 'assessments' ? 'true' : undefined}
-            onClick={() => setViewSection('assessments')}
+            onClick={handleSwitchToAssessments}
           >
             Assessments
           </button>
@@ -460,15 +475,21 @@ export function CourseDetail({ id, onBack }: { id: string; onBack: () => void })
             <div className="module-container">
               <ModuleView
                 key={activeModule.id}
+                courseId={id}
                 module={activeModule}
                 busy={busy}
                 post={post}
                 canGenerateNext={canGenerateNext && activeModule.id === latestModule?.id}
                 onGenerateNext={generateNextModule}
-                onOpenAssessments={() => setViewSection('assessments')}
+                onOpenAssessments={handleSwitchToAssessments}
                 draftState={currentDraftState}
                 onDraftChange={(updated) => handleDraftChange(activeModule.id, updated)}
                 onDraftSaved={(newHash) => handleDraftSaved(activeModule.id, newHash)}
+                tutorDrafts={tutorDraftQuestions}
+                onTutorDraftChange={(key, text) =>
+                  setTutorDraftQuestions((prev) => ({ ...prev, [key]: text }))
+                }
+                currentDraftHash={modules.find((m) => !m.accepted)?.contentHash ?? null}
               />
             </div>
           )}

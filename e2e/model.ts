@@ -4,11 +4,20 @@ Bun.serve({
     if (request.method === 'GET') return new Response('ok')
     const body = await request.json() as { messages: { content: string }[] }
     if (body.messages.some((message) => message.content.includes('slow test'))) await Bun.sleep(300)
+    if (body.messages.some((message) => message.content.includes('fail tutor provider'))) {
+      return Response.json({ error: 'simulated provider failure' }, { status: 500 })
+    }
+    const isTutor = body.messages[0]?.content.includes('You are a contextual tutor')
+    const isTutorProposal = isTutor && body.messages[0]?.content.includes('The learner requested a reviewable proposal')
     const outline = body.messages[0]?.content.includes('Create a concise structured course outline')
     const module1 = body.messages[0]?.content.includes('Create the first module')
     const module2 = body.messages[0]?.content.includes('Create module 2')
     const feedback = body.messages[0]?.content.includes('Give constructive')
-    const content = module2
+    const content = isTutorProposal
+      ? 'Advisory Proposal: Consider introducing a practical debugging exercise in the next module.'
+      : isTutor
+      ? 'Tutor response: Here is an explanation connecting your attempt to the lesson principles.'
+      : module2
       ? JSON.stringify({
           title: 'Advanced application',
           lessons: [{ title: 'Deep dive', body: 'Deep dive into application.' }],
