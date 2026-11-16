@@ -66,7 +66,7 @@ The existing local host/origin checks still gate these learner writes, and provi
 
 ## Tests and limits
 
-Automated tests use a captured mock provider and an injected clock:
+Backend tests stub `fetch` to capture the provider request and use an injected clock:
 
 - exact prompt and disclosure, including lesson/attempt IDs and text, prior turn IDs/text and no source/other-attempt/other-lesson leakage;
 - per-lesson persistence and isolation across a database restart;
@@ -76,4 +76,4 @@ Automated tests use a captured mock provider and an injected clock:
 - concurrent conversation revision rejection;
 - over-budget rejection without a provider call.
 
-These are backend tests against a deterministic HTTP fixture. A real provider, real-model answer quality, browser/desktop/mobile journey and route-origin browser checks were not exercised here; the UI is not integrated yet. Source citations are not verified. Written and code feedback remains advisory.
+Desktop and mobile Chromium browser journeys exercise the tutor interface against a local HTTP model fixture. A real provider and real-model answer quality remain unverified. Source citations are not verified. Written and code feedback remains advisory.

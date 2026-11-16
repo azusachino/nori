@@ -2,6 +2,10 @@
 
 Updated 2026-11-14. The owner authorized a Bun + SQLite self-hosted learning app, selected the project (now `azusachino/nori`) as class `live`, and requested a written plan with Herdr Pi peers using Haiku and DeepSeek. The acceptance criteria and ordered slices are in [mvp-plan.md](mvp-plan.md).
 
+## Active continuation
+
+The owner accepted the MVP layout direction and asked for the Nori icon plus the planned work with AGY and Pi/DeepSeek. At `d36446e` on `task/mvp`, the assessment and tutor interfaces are integrated locally with the multi-module backend; PR #1 remains open and this is not a shipped MVP. An independent DeepSeek review reproduced loss of unsaved practice drafts on navigation, a React assessment-state warning and stale active timer display; its recheck at `d36446e` verified the fixes with browser probes, `make check` (37 tests) and `make e2e` (44 Chromium desktop/mobile tests). The product plan, UI design and feature documentation record the updated status. The DeepSeek backend worktree is `.worktrees/same-onboarding/.worktrees/nori-multimodule`, branch `task/nori-multimodule`; its work was cherry-picked through `6797078`. The real-model journey remains unverified; the SQLite backup/restore test uses disposable data rather than a deployed instance. Inspect current Git and agent state before resuming; this is a checkpoint, not a lock.
+
 ## Checkpoint
 
 - Workstation catalog onboarding: isolated branch `task/same-onboarding`, commit `55fe224`; the Nori checkout is `vendor/nori` within that workstation worktree. Root `make validate` failed on existing shared-toolchain mismatches: Cappuccino `rumdl` 0.2 vs 0.3, Cinnamon Python 3.14 vs 3.15 and uv 0.12 vs 0.13. Root `make build-docs` passed. Do not push the catalog PR until its required gate passes; other projects' checkouts are shared and were not edited.
@@ -12,7 +16,7 @@ Updated 2026-11-14. The owner authorized a Bun + SQLite self-hosted learning app
 
 ## Remaining work
 
-The MVP is **not complete**. The plan still requires later modules and safe accepted-content revision, timed and untimed assessments spanning lessons, contextual tutor with visible context, fuller durable learning progress, source citation verification, resilient and streamed LLM generation, backup/restore proof, and the full acceptance journey. Study exercises support feedback and owner correction; this does not establish grading correctness. The UI must not claim unsupported features.
+The MVP is **not complete**. Later modules, assessments and contextual tutoring are implemented; independent-review fixes, a representative real-model journey, source citation verification, production restart and deployed restore remain. Study exercises support feedback and owner correction; this does not establish grading correctness. The UI must not claim unsupported features.
 
 Remaining concerns include context exceeding a provider's smaller model limit, PDF extraction without a hard timeout, unverified source citations, no model capability detection, non-streaming chat, and no process-restart application E2E. Local processes can access learner routes and must be trusted. A temporary provider fixture is not proof of real-model behavior.
 

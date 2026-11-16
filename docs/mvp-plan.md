@@ -1,53 +1,102 @@
 # Nori MVP plan
 
-## Outcome
+## Product role
 
-A single learner can run Nori on Bun with one SQLite database, discuss a goal with an LLM, review a course outline, generate the first module, and study it comfortably on desktop or mobile. The app is a calm course reader, with progress, relevant feedback, and contextual help. An external agent can use a documented API to create the same reviewable content. No deployed service or release is implied by this plan.
+Nori is a private learning workspace for one person. It helps the learner turn a goal into an editable course, study and practise, and return to their work over time. The model helps plan, draft, explain and review; the learner decides what to study, approves generated material, and can correct feedback. Nori records evidence of learning activity rather than claiming mastery.
 
-## Acceptance criteria
+The primary journey is **goal → conversation and sources → editable outline → reviewed modules → lessons and exercises → feedback → resume**, with assessments and a contextual tutor.
 
-1. A fresh installation starts with documented commands, persists its SQLite database across restarts, and provides a local single-owner interface without a login. Provider credentials stay server-side. The production process runs on Bun; document storage, configuration, backup and restore.
-2. The owner configures an OpenAI-compatible endpoint, discusses a topic, sees an outline and can edit it before approving it. Markdown and PDF are optional sources; generated course content identifies supplied sources where possible and identifies ungrounded content. Errors and unavailable providers are visible.
-3. After outline approval, generation produces the first module's editable lessons and exercises as a draft. The learner reviews and accepts it. Subsequent modules generate on request; a completed lesson is not silently rewritten. Generation and retry must not discard existing drafts or learner work.
-4. A learner can navigate freely, complete a multiple-choice question with immediate deterministic feedback, submit a written response and code for explainable AI feedback, correct an AI judgment, and retry. The MVP does not execute code. Results and completion persist across restart.
-5. A separate assessment can draw from multiple lessons, run timed or untimed, and show results and explanations after submission. Progress is based on recorded work, not inferred mastery.
-6. A contextual tutor can use the current lesson and relevant attempts, and makes its supplied context visible. A learner can propose and review changes to future material.
-7. A documented local-agent API creates and revises drafts in the same course model as the built-in flow. Agent routes do not expose learning activities; any local process can also access the learner routes. Export produces readable course files.
-8. Desktop and mobile browser checks cover the create → outline → module → exercise → feedback → resume path, including loading, error and empty states. Keyboard access and legible layouts are checked. Use Google Chrome's modern-web-guidance for relevant UI patterns.
+Nori complements a personal notes vault: the vault remains useful for durable notes and sources, while Nori owns course structure, learner attempts and the study experience. Readable Markdown export is part of the MVP; synchronization with a particular vault is not assumed.
 
-## Architecture and decisions
+## Learner stories and acceptance
 
-- **Runtime and storage:** Bun and SQLite, single owner, single application instance. Store uploaded source files and extracted text in SQLite; backups must include the database and its WAL-consistent state. No separate queue, cache, or database service.
-- **Framework decision gate:** TanStack Start + React is the leading candidate. Before committing the application architecture, build and run a production spike on Bun that serves a page and API, reads/writes `bun:sqlite`, survives restart, and streams a response. Check SvelteKit's official Bun adapter against the same criteria if the TanStack path is awkward. Record actual command results and choose based on implementation evidence.
-- **AI boundary:** An OpenAI-compatible server endpoint and model are configured by the operator. AI outputs are validated before persistence. Keep model calls outside SQLite transactions; show failures and permit retries. Do not assume model grading is authoritative.
-- **Interaction:** Course outline, module draft, and accepted learning material are distinct states. Store the learner's work separately from generated content; any revision preserves completed work.
-- **Security:** Nori is a trusted local tool without application authentication. Bind the supported production start to loopback, reject unexpected hosts and cross-origin browser writes, and do not expose provider secrets to the browser. Local processes can read and modify all course data, including learner work; the agent routes are a workflow boundary, not an authorization boundary. Remote exposure requires a separately secured access layer.
+1. **Start and resume.** I can describe a learning goal and my existing knowledge, see my courses, reopen one, and understand what I can do next. Recorded progress distinguishes attempts and completion from inferred mastery.
+2. **Bring sources or start from a topic.** I can optionally add Markdown, text or text-based PDF material and remove a source. I can see which sources were supplied and understand that generated content and citations can be inaccurate; topic-only learning remains possible.
+3. **Shape the course.** I can discuss my goal with a configured model, review and edit an outline, and approve the saved version. Provider errors are visible and retryable. AI or agent revisions cannot silently overwrite my edits.
+4. **Review and study modules.** I can generate modules on request, inspect and edit lessons, questions and reference answers before acceptance, and navigate freely between available lessons. A completed lesson and recorded work are not silently rewritten; proposed future changes are reviewable.
+5. **Practise and correct feedback.** I can answer multiple-choice questions with deterministic feedback and submit written and code responses for explainable advisory feedback. I can retry and correct an AI judgment. Nori does not execute code. My answers, feedback and corrections remain reviewable after reopening and restarting.
+6. **Check understanding.** I can take a separate timed or untimed assessment spanning multiple lessons, submit it intentionally and review results and explanations.
+7. **Ask for help in context.** I can ask a tutor about the current lesson and relevant attempts, inspect what context was supplied and propose changes to future material for review.
+8. **Keep and author my work.** I can export readable course material. A documented local-agent API can create and revise reviewable drafts. Agent endpoints are a workflow boundary: any local process that can reach the application can also use learner routes.
+9. **Run and trust the workspace.** I can start it using documented commands, keep course data across restarts, back up and restore it, and use it comfortably on desktop and mobile with a keyboard. Errors, draft state and source limitations are visible. Provider credentials remain server-side.
 
-## Delivery slices
+## Current checkpoint
 
-1. **Framework spike and design contract.** Compare the Bun production paths, choose the framework, document setup and define a desktop/mobile lesson, outline and tutor layout. Verify the production server, SQLite persistence and streaming.
-2. **Foundation.** Configuration, local-only access, database migrations, course library and durable backup instructions. Gate: production restart preserves an owner session's course data, with cross-origin writes denied.
-3. **Course authoring.** Streaming discussion, outline edit/approval, Markdown/PDF source intake, first-module generation, editable draft and generation errors. Gate: create a small course with a controlled model fixture and reopen its draft after restart.
-4. **Learning and feedback.** Lesson reader, deterministic multiple-choice grading, written/code submission with advisory feedback and corrections, retries and progress. Gate: browser completes one of each and reloads results; no code executes.
-5. **Assessments and tutor.** Timed/untimed multi-lesson exam, review and contextual tutor, future-module generation and reviewable changes. Gate: complete an exam, resume, and inspect tutor context.
-6. **External authoring and portability.** Local agent API, documentation and export. Gate: an agent creates a reviewable draft and exported material is readable outside Nori.
-7. **Acceptance.** Run the project's checks and a browser journey on desktop and mobile using a real compatible LLM when available. Record model, commands, outcomes, failures, and what was only tested with fixtures. Verify the real production start and persistent volume separately from development.
+Nori PR [#1](https://github.com/azusachino/nori/pull/1) is open. Local branch `task/mvp` includes the library, planning and source uploads, editable outline, ordered reviewable modules, exercises and advisory feedback, assessments, contextual tutor, a local draft API, and Markdown export. Code execution is not provided. Inspect Git and the PR for the current head; this is not a released or complete MVP.
 
-## AME research inputs
+At implementation commit `17605b2`, `make check` passed with 13 unit tests, `make e2e` passed 12 desktop/mobile Chromium tests with a deterministic model fixture, and `make e2e-probe` passed. The supported production start was observed bound to loopback even with a conflicting inherited Nitro host. A peer reviewed the six preceding fixes; see [handoff](handoff.md). The fixture does not establish real-model quality. That earlier checkpoint did not verify a real LLM, deployed backup restore, mobile Safari or assistive-technology use.
 
-AME's [learner information architecture audit](https://github.com/mikafans/ame/blob/1585260025e33f2ea387d141efa8a37c119d2d16/docs/audits/2026-08-03-learner-information-architecture-research.md) recommends a single learning destination, course-scoped navigation and a clear next action. Its [agent authoring audit](https://github.com/mikafans/ame/blob/1585260025e33f2ea387d141efa8a37c119d2d16/docs/audits/2026-08-02-agent-course-author-simulations.md) records handoff and list/detail inconsistencies. Apply these lessons by testing the end-to-end owner journey, keeping draft and learner-ready states explicit, and distinguishing pending feedback from scored work. These are source-review findings; this project has not reproduced the earlier issues.
+After the owner accepted the MVP layout direction, AGY implemented the Tailwind/shadcn interface and Nori icon; Pi/DeepSeek implemented multi-module and assessment/tutor backends. At `fd59411`, an independent reviewer ran `make check` (37 tests, 440 assertions), `make e2e` (36 Chromium desktop/mobile tests) and two targeted browser probes. The review found unsaved practice drafts, assessment state synchronization and timer display issues; an independent recheck at `d36446e` verified the fixes, with 37 backend tests, 44 Chromium desktop/mobile tests and targeted browser probes. A disposable SQLite WAL backup/restore test passes. The real-model journey, mobile Safari and assistive-technology use remain unverified.
 
-## Initial framework spike (2026-11-14)
+## Product and technical boundaries
 
-A disposable TanStack Start React scaffold (`@tanstack/react-start` 1.169.5, Nitro 3.0.260610-beta, Bun 1.4.4) built for Nitro's Bun preset. The production server returned HTTP 200 for its page; a `bun:sqlite` endpoint returned visit count 1, then count 2 after a server restart. A separate streaming endpoint delivered its first line immediately and its second approximately 0.5 seconds later. The build emitted warnings that module-level `use client` directives may not be preserved. This is evidence for a minimal server path only: no real LLM, UI, authentication, proxy, migration, backup, load or SvelteKit comparison was tested. The scaffold and database live in ignored scratch and are not application code. TanStack Start remains the provisional choice until the warnings and a representative UI are evaluated.
+- **Personal and local:** one learner, one application instance, SQLite and no browser login. The supported production command binds to loopback and rejects unexpected hosts and cross-origin browser writes. Local processes can read and change learner data; remote access needs a separately secured access layer.
+- **Storage and portability:** original uploads, extracted text, course material and learner work are stored in SQLite. Provide backup and restore instructions that account for SQLite WAL. Export remains readable outside Nori.
+- **Model boundary:** the operator configures an OpenAI-compatible endpoint. Validate generated output before persistence, keep model calls outside database transactions, and make failures and retries visible. Feedback is advisory; citations are not verified by default.
+- **Current implementation:** React, TanStack Start, Nitro's Bun preset and `bun:sqlite` are in PR #1. A Bun production spike served a page and API, retained SQLite across restart and streamed a test response. SvelteKit was reviewed from documentation but not prototyped. Node 26 was discussed as a possible alternative, not chosen; a migration would need its own SQLite, runtime, persistence and test assessment.
+- **UI direction:** Tailwind and shadcn/ui were requested. The owner said the proposed library, planning and study layouts suit an MVP; detailed visual decisions and a real-course walkthrough remain open. The [UI design](ui-design.md) records that direction.
+- **Excluded:** classrooms, multiple users, a marketplace, hosted identity, automatic code execution, Kubernetes deployment and production release.
 
-## Open implementation decisions
+## Ordered plan
 
-- Choose TanStack Start or SvelteKit only after the framework spike; no UI depends on the choice yet.
-- Select auth, AI SDK and database tooling based on the smallest solution that meets the criteria; do not assume every TanStack package is required.
-- Define an export format after reviewing Apricot's actual Markdown conventions.
-- Select the UI visual language from relevant product references; avoid copying branding. Establish a browser support policy and verify mobile and keyboard behavior.
+The first task is a product-design checkpoint. Later tasks describe intended work; their presence does not mean the features are implemented or that the owner has selected a particular real learning topic.
 
-## Non-goals
+### 1. Ground the design in a real learning journey
 
-Classrooms, multiple learners, marketplace, hosted identity, automatic code execution, Kubernetes deployment and a production release are not part of this MVP. Source text and AI feedback can be wrong and must remain inspectable.
+- [ ] Choose a real topic and learning goal with the owner, including current experience and what a useful outcome looks like. Use optional existing sources if relevant.
+- [ ] Walk through starting, planning, reviewing, studying, practising and returning. Identify the questions, decisions, saved state and failure cases at each step.
+- [ ] Apply the owner's acceptance of the library, planning and study layout direction to the real-course walkthrough; refine the detailed desktop/mobile designs in [the UI design](ui-design.md).
+
+**Done when:** the owner can follow one concrete journey and the design distinguishes present functionality from later-MVP screens. No real course topic or design approval has been assumed.
+
+### 2. Establish the UI foundation and first course journey
+
+- [ ] Verify the Tailwind/shadcn foundation and Nori icon against the agreed design. Use only the components the journey needs and preserve local access and draft-conflict behavior.
+- [ ] Deliver library, planning, source management, outline approval, module review and study/practice as small, verifiable slices. Cover empty, loading, failure, unsaved and conflict states.
+- [ ] Check keyboard use, responsive layout, recorded attempts and advisory feedback. Preserve accepted content and existing data.
+
+**Verify:** `make check`, relevant desktop/mobile browser journeys and visual inspection; complete `make e2e` and `make e2e-probe` at the stable checkpoint. Record browser and accessibility limits.
+
+### 3. Make a course safely continue across modules
+
+- [ ] Design and migrate the single-module-per-course storage to support ordered modules and lessons without losing existing drafts, attempts or identities.
+- [ ] Generate later modules on request; let the learner navigate and see progress based on stored activity. Require review of changes to future material and preserve completed work.
+- [ ] Verify migration, restart, retry and conflict behavior using an existing single-module course and a new multi-module course.
+
+**Done when:** the real learning journey can continue beyond its first accepted module without silently changing earlier work. Acceptance and migration are tracked in [issue #2](https://github.com/azusachino/nori/issues/2).
+
+**Integration contract in progress:** retain the original `module` field and legacy actions targeting the first module. Return an ordered `modules` array; new later-module creation uses a separate plural endpoint, and editing, acceptance, answers and corrections for later modules carry an explicit `moduleId`. Never retarget an old client silently. Preserve existing module and exercise IDs, accepted content, attempts and corrections across migration and restart. Agent reads expose accepted-module metadata and unaccepted draft content; stale draft writes return a conflict.
+
+### 4. Add assessments and contextual help
+
+Tracked separately as [assessments #4](https://github.com/azusachino/nori/issues/4) and [contextual tutor #3](https://github.com/azusachino/nori/issues/3); both depend on a stable multi-module contract.
+
+- [ ] Build timed and untimed assessments spanning multiple lessons, with explicit submission, persisted results and explanations.
+- [ ] Add a tutor scoped to the current lesson and relevant attempts; show what context it receives and route proposed future changes through review.
+
+**Verify:** complete and resume each assessment mode, inspect results and tutor context, and confirm completed content and attempts remain intact.
+
+### 5. Prove portability and end-to-end use
+
+- [ ] Exercise the documented local-agent workflow and readable Markdown export on a representative course.
+- [ ] Verify production restart and a backup/restore into a separate location. Run a real-model journey when a compatible provider is available, recording its model, failures and quality limits.
+- [ ] Complete desktop/mobile browser and keyboard checks; separately record mobile Safari and assistive-technology coverage or lack of it. Check generated source references against the supplied material; do not claim verification without evidence.
+
+**Done when:** the agreed MVP stories have observable evidence, remaining limits are recorded, and the course can be reopened, exported and restored.
+
+## Open decisions and risks
+
+- **Real course:** the topic, starting knowledge, sources and successful outcome for the design walkthrough still need the owner's choice.
+- **UI:** the visual language and screen layouts in the current UI draft need review; Tailwind/shadcn are requested tooling, not a substitute for this decision.
+- **Runtime:** keep the current Bun implementation for this plan unless a separate Node migration is selected and verified. Nitro is the current server layer, not a database or separate required service.
+- **Grounding and model limits:** source citations may be invented, providers have different context windows, and real-model behavior is not established by fixtures. Decide what source evidence to show and test it with real material.
+- **Data safety:** multi-module changes and future revisions must preserve old course content and attempts. Backup restoration and production restart remain acceptance work.
+- **Provider and UI reliability:** PDF extraction has no hard timeout; chat is not streamed; a server-side edit conflict preserves work but requires refreshing to update the editor's conflict state.
+
+## Research and historical evidence
+
+The workstation's `docs/runbooks/research/2026-11/2026-11-13-self-hosted-ai-learning.md` compared documented project capabilities, not hands-on installations. LearnHouse informed conversational course creation; Lextures informed agent authoring; Open Tutor informed portable course files. None is a proven replacement without a representative trial.
+
+AME's [learner information architecture audit](https://github.com/mikafans/ame/blob/1585260025e33f2ea387d141efa8a37c119d2d16/docs/audits/2026-08-03-learner-information-architecture-research.md) recommends course-scoped navigation and a clear next action. Its [agent authoring audit](https://github.com/mikafans/ame/blob/1585260025e33f2ea387d141efa8a37c119d2d16/docs/audits/2026-08-02-agent-course-author-simulations.md) describes handoff and list/detail inconsistencies. These are source-review findings, not issues reproduced in Nori.
+
+The Bun spike built TanStack Start + Nitro, served a page, retained a SQLite counter over restart and delivered a streamed response in two chunks. It emitted `use client` bundler warnings. That limited result did not test the full application, a real provider, a proxy, backup restore, or a SvelteKit implementation.

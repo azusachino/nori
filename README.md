@@ -1,6 +1,6 @@
 # nori
 
-A small self-hosted learning space, in development. The current slice provides a private library, planning conversations, editable course outlines, and ordered modules with multiple-choice, written and code exercises. A later module is generated on request, reviewed and accepted without rewriting accepted modules or learner work. The [assessment](docs/assessments.md) backend API is implemented for selected accepted modules (exercises are module-level), timed or untimed, with recorded results and explanations after submission; the learner assessment interface is not integrated yet. AI feedback is advisory and code is not executed. Markdown, text and text-based PDFs (up to 5 MB and 50 pages) can be supplied as source material. A local [agent API](docs/agent-api.md) can create drafts for review. Courses can be exported as readable Markdown. The [contextual tutor](docs/tutor.md) backend API is implemented for a selected accepted lesson and explicitly chosen attempts; the learner tutor interface is not integrated yet. See [the MVP plan](docs/mvp-plan.md).
+A small self-hosted learning space, in development. The current slice provides a private library, planning conversations, editable course outlines, and ordered modules with multiple-choice, written and code exercises. A later module is generated on request, reviewed and accepted without rewriting accepted modules or learner work. Learners can take [timed or untimed assessments](docs/assessments.md) across selected accepted modules, with recorded results and explanations after finalization; exercises are module-level. AI feedback is advisory and code is not executed. Markdown, text and text-based PDFs (up to 5 MB and 50 pages) can be supplied as source material. A local [agent API](docs/agent-api.md) can create drafts for review. Courses can be exported as readable Markdown. The [contextual tutor](docs/tutor.md) answers questions about a selected accepted lesson and explicitly chosen attempts, with inspectable context and reviewable proposals. See [the MVP plan](docs/mvp-plan.md).
 
 ## Run locally
 
@@ -14,8 +14,8 @@ Existing `SAME_` configuration for the database, origin and model still works af
 
 ## Checks
 
-- `make check` builds the production application and runs TypeScript checks.
+- `make check` builds the production application, checks TypeScript and runs backend tests.
 - `make e2e-install` installs the Playwright Chromium browser.
-- `make e2e` exercises desktop and mobile planning and practice with a local model fixture, persistence and access control using a disposable database under `.tmp/e2e/`.
+- `make e2e` exercises desktop and mobile planning, practice, assessments and tutoring with a local model fixture, persistence and access control using a test database under `.tmp/e2e/`.
 
 Production output is started with `bun run start` after `make build`. [Back up and restore](docs/backup.md) with SQLite's online backup API or `VACUUM INTO` while the server runs, and restore only with the server stopped; copying only the database file while WAL is active can omit data. A scratch automated test covers a live WAL `VACUUM INTO` backup and independent reopen; a deployed proxy or real production restore has not been tested.
