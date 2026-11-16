@@ -14,7 +14,11 @@ Existing `SAME_` configuration for the database, origin and model still works af
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks and pull request guidance. The project does not yet have an open-source license; a public repository alone does not grant permission to reuse or redistribute its code.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks and pull request guidance.
+
+## License
+
+Nori is licensed under the [Apache License 2.0](LICENSE).
 
 ## Checks
 
