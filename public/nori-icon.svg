@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Nori icon">
+  <style>
+    .bg { fill: #536d4f; }
+    .ink { stroke: #f8f8f2; fill: none; }
+    .accent { fill: #b46a3b; stroke: none; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #3f553a; }
+      .ink { stroke: #f0f2eb; fill: none; }
+      .accent { fill: #c87644; stroke: none; }
+    }
+  </style>
+  <rect class="bg" width="64" height="64" rx="16"/>
+  <!-- n -->
+  <path class="ink" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" d="M15 27V17.5a4.5 4.5 0 0 1 9 0V27"/>
+  <!-- o -->
+  <circle class="ink" stroke-width="3.6" cx="43" cy="20" r="7"/>
+  <!-- r -->
+  <path class="ink" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" d="M15 51V41.5a4.5 4.5 0 0 1 8-2.5"/>
+  <!-- i -->
+  <line class="ink" stroke-width="3.6" stroke-linecap="round" x1="43" y1="44" x2="43" y2="51"/>
+  <circle class="accent" cx="43" cy="38" r="2.4"/>
+</svg>
