@@ -22,7 +22,9 @@ Nori complements a personal notes vault: the vault remains useful for durable no
 
 ## Current checkpoint
 
-Nori PR [#1](https://github.com/azusachino/nori/pull/1) is open. Local branch `task/mvp` includes the library, planning and source uploads, editable outline, ordered reviewable modules, exercises and advisory feedback, assessments, contextual tutor, a local draft API, and Markdown export. Code execution is not provided. Inspect Git and the PR for the current head; this is not a released or complete MVP.
+Nori PR [#1](https://github.com/azusachino/nori/pull/1) merged on 2026-11-16, and CI is green on `main` at `5bbd720`. The merged application includes the library, planning and source uploads, editable outline, ordered reviewable modules, exercises and advisory feedback, assessments, contextual tutor, a local draft API, and Markdown export. Code execution is not provided.
+
+What that does **not** show: every journey was run against a deterministic model fixture and disposable data. The MVP is therefore complete in surface and unproven in use. [Issue #5](https://github.com/azusachino/nori/issues/5) is the gate that closes that gap, and sections 1 and 5 below are its work.
 
 At implementation commit `17605b2`, `make check` passed with 13 unit tests, `make e2e` passed 12 desktop/mobile Chromium tests with a deterministic model fixture, and `make e2e-probe` passed. The supported production start was observed bound to loopback even with a conflicting inherited Nitro host. A peer reviewed the six preceding fixes; see [handoff](handoff.md). The fixture does not establish real-model quality. That earlier checkpoint did not verify a real LLM, deployed backup restore, mobile Safari or assistive-technology use.
 
@@ -51,28 +53,28 @@ The first task is a product-design checkpoint. Later tasks describe intended wor
 
 ### 2. Establish the UI foundation and first course journey
 
-- [ ] Verify the Tailwind/shadcn foundation and Nori icon against the agreed design. Use only the components the journey needs and preserve local access and draft-conflict behavior.
-- [ ] Deliver library, planning, source management, outline approval, module review and study/practice as small, verifiable slices. Cover empty, loading, failure, unsaved and conflict states.
-- [ ] Check keyboard use, responsive layout, recorded attempts and advisory feedback. Preserve accepted content and existing data.
+- [x] Verify the Tailwind/shadcn foundation and Nori icon against the agreed design. Use only the components the journey needs and preserve local access and draft-conflict behavior.
+- [x] Deliver library, planning, source management, outline approval, module review and study/practice as small, verifiable slices. Cover empty, loading, failure, unsaved and conflict states.
+- [x] Check keyboard use, responsive layout, recorded attempts and advisory feedback. Preserve accepted content and existing data.
 
 **Verify:** `make check`, relevant desktop/mobile browser journeys and visual inspection; complete `make e2e` and `make e2e-probe` at the stable checkpoint. Record browser and accessibility limits.
 
 ### 3. Make a course safely continue across modules
 
-- [ ] Design and migrate the single-module-per-course storage to support ordered modules and lessons without losing existing drafts, attempts or identities.
-- [ ] Generate later modules on request; let the learner navigate and see progress based on stored activity. Require review of changes to future material and preserve completed work.
-- [ ] Verify migration, restart, retry and conflict behavior using an existing single-module course and a new multi-module course.
+- [x] Design and migrate the single-module-per-course storage to support ordered modules and lessons without losing existing drafts, attempts or identities.
+- [x] Generate later modules on request; let the learner navigate and see progress based on stored activity. Require review of changes to future material and preserve completed work.
+- [x] Verify migration, restart, retry and conflict behavior using an existing single-module course and a new multi-module course.
 
-**Done when:** the real learning journey can continue beyond its first accepted module without silently changing earlier work. Acceptance and migration are tracked in [issue #2](https://github.com/azusachino/nori/issues/2).
+**Done when:** the real learning journey can continue beyond its first accepted module without silently changing earlier work. Acceptance and migration were tracked in [issue #2](https://github.com/azusachino/nori/issues/2) and delivered in PR #1; the real-course proof is [issue #5](https://github.com/azusachino/nori/issues/5).
 
-**Integration contract in progress:** retain the original `module` field and legacy actions targeting the first module. Return an ordered `modules` array; new later-module creation uses a separate plural endpoint, and editing, acceptance, answers and corrections for later modules carry an explicit `moduleId`. Never retarget an old client silently. Preserve existing module and exercise IDs, accepted content, attempts and corrections across migration and restart. Agent reads expose accepted-module metadata and unaccepted draft content; stale draft writes return a conflict.
+**Integration contract, delivered in PR #1:** retain the original `module` field and legacy actions targeting the first module. Return an ordered `modules` array; new later-module creation uses a separate plural endpoint, and editing, acceptance, answers and corrections for later modules carry an explicit `moduleId`. Never retarget an old client silently. Preserve existing module and exercise IDs, accepted content, attempts and corrections across migration and restart. Agent reads expose accepted-module metadata and unaccepted draft content; stale draft writes return a conflict.
 
 ### 4. Add assessments and contextual help
 
-Tracked separately as [assessments #4](https://github.com/azusachino/nori/issues/4) and [contextual tutor #3](https://github.com/azusachino/nori/issues/3); both depend on a stable multi-module contract.
+Tracked separately as [assessments #4](https://github.com/azusachino/nori/issues/4) and [contextual tutor #3](https://github.com/azusachino/nori/issues/3), both delivered in PR #1 on the multi-module contract. Real-model behaviour is [issue #5](https://github.com/azusachino/nori/issues/5).
 
-- [ ] Build timed and untimed assessments spanning multiple lessons, with explicit submission, persisted results and explanations.
-- [ ] Add a tutor scoped to the current lesson and relevant attempts; show what context it receives and route proposed future changes through review.
+- [x] Build timed and untimed assessments spanning multiple lessons, with explicit submission, persisted results and explanations.
+- [x] Add a tutor scoped to the current lesson and relevant attempts; show what context it receives and route proposed future changes through review.
 
 **Verify:** complete and resume each assessment mode, inspect results and tutor context, and confirm completed content and attempts remain intact.
 
@@ -82,7 +84,7 @@ Tracked separately as [assessments #4](https://github.com/azusachino/nori/issues
 - [ ] Verify production restart and a backup/restore into a separate location. Run a real-model journey when a compatible provider is available, recording its model, failures and quality limits.
 - [ ] Complete desktop/mobile browser and keyboard checks; separately record mobile Safari and assistive-technology coverage or lack of it. Check generated source references against the supplied material; do not claim verification without evidence.
 
-**Done when:** the agreed MVP stories have observable evidence, remaining limits are recorded, and the course can be reopened, exported and restored.
+**Done when:** the agreed MVP stories have observable evidence, remaining limits are recorded, and the course can be reopened, exported and restored. This section and section 1 are [issue #5](https://github.com/azusachino/nori/issues/5).
 
 ## Open decisions and risks
 
