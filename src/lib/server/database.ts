@@ -232,6 +232,25 @@ export function migrate(database: Database) {
     draft_content_hash TEXT,
     created_at INTEGER NOT NULL
   )`)
+  database.run(`CREATE TABLE IF NOT EXISTS practice_attempts (
+    id TEXT PRIMARY KEY,
+    course_key TEXT NOT NULL,
+    lesson_key TEXT NOT NULL DEFAULT '',
+    exercise_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    exercise_snapshot TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    correct INTEGER,
+    grading TEXT NOT NULL CHECK(grading IN ('deterministic', 'unscored')),
+    feedback TEXT NOT NULL DEFAULT '',
+    advisory INTEGER NOT NULL DEFAULT 0,
+    owner_note TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`)
+  database.run('CREATE INDEX IF NOT EXISTS practice_attempts_scope ON practice_attempts(course_key, lesson_key, created_at)')
+  database.run('CREATE INDEX IF NOT EXISTS practice_attempts_exercise ON practice_attempts(course_key, lesson_key, exercise_key, created_at)')
 }
 
 export function openDatabase(path: string): Database {

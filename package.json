@@ -9,6 +9,7 @@
     "dev": "umask 077 && bun --bun vite dev --port 3000",
     "build": "bun --bun vite build",
     "start": "umask 077 && NITRO_HOST=127.0.0.1 HOST=127.0.0.1 bun .output/server/index.mjs",
+    "sidecar": "umask 077 && bun run src/sidecar-server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

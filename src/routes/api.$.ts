@@ -3,12 +3,15 @@ import { sameOrigin, validHost } from '../lib/server/auth'
 import { db } from '../lib/server/db'
 import { createAgentApi } from '../lib/server/agent'
 import { createLearnerApi } from '../lib/server/api'
+import { createSidecarApi } from '../lib/server/sidecar'
 
 const learnerApi = createLearnerApi(db)
 const agentApi = createAgentApi(db)
+const sidecarApi = createSidecarApi(db)
 
 async function handle(request: Request): Promise<Response> {
   const path = new URL(request.url).pathname
+  if (path === '/api/nori' || path.startsWith('/api/nori/')) return sidecarApi(request)
   if (!validHost(request)) return Response.json({ error: 'Invalid request host' }, { status: 403 })
   if (path.startsWith('/api/agent/')) {
     if (request.method !== 'GET' && (request.headers.get('x-nori-agent') !== '1' || (request.headers.has('origin') && !sameOrigin(request)))) return Response.json({ error: 'Invalid agent request' }, { status: 403 })
