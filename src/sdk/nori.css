@@ -216,3 +216,15 @@
   color: var(--nori-primary);
   font-weight: 500;
 }
+
+.nori-codeblock {
+  margin: 0.4rem 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: 8px;
+  border: 1px solid var(--nori-line);
+  background: var(--nori-surface);
+  font-family: var(--nori-font-mono);
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+
