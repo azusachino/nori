@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Sidecar v1 assessments and contextual tutor (Slice 3).** Added `/api/nori/v1/assessments` (timed/untimed server-clock expiry across restarts, deterministic MCQ + unscored written/code results, advisory LLM feedback, and owner corrections) and `/api/nori/v1/tutor` (scoped attempt selection, untrusted-data prompt framing, 256 KB body limit, 120,000-char budget, deduplicated lesson text storage by hash, and turn revision conflicts). Added matching `NoriClient` methods plus `<NoriAssessment />` and `<NoriTutor />` SDK islands.
+
 ## 0.0.1
 
 Initial MVP release of Nori as an embeddable practice SDK and headless local/tailnet sidecar for static learning sites.

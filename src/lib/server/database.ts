@@ -251,6 +251,68 @@ export function migrate(database: Database) {
   )`)
   database.run('CREATE INDEX IF NOT EXISTS practice_attempts_scope ON practice_attempts(course_key, lesson_key, created_at)')
   database.run('CREATE INDEX IF NOT EXISTS practice_attempts_exercise ON practice_attempts(course_key, lesson_key, exercise_key, created_at)')
+  database.run(`CREATE TABLE IF NOT EXISTS sidecar_assessments (
+    id TEXT PRIMARY KEY,
+    course_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK(mode IN ('timed', 'untimed')),
+    duration_seconds INTEGER,
+    status TEXT NOT NULL CHECK(status IN ('planned', 'active', 'submitted', 'expired')),
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    deadline_at INTEGER,
+    submitted_at INTEGER,
+    finalized_at INTEGER,
+    version INTEGER NOT NULL DEFAULT 0
+  )`)
+  database.run('CREATE INDEX IF NOT EXISTS sidecar_assessments_course ON sidecar_assessments(course_key, created_at)')
+  database.run(`CREATE TABLE IF NOT EXISTS sidecar_assessment_items (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES sidecar_assessments(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    lesson_key TEXT NOT NULL DEFAULT '',
+    exercise_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    exercise_snapshot TEXT NOT NULL,
+    UNIQUE(assessment_id, position)
+  )`)
+  database.run(`CREATE TABLE IF NOT EXISTS sidecar_assessment_answers (
+    assessment_id TEXT NOT NULL REFERENCES sidecar_assessments(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES sidecar_assessment_items(id) ON DELETE CASCADE,
+    answer TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(assessment_id, item_id)
+  )`)
+  database.run(`CREATE TABLE IF NOT EXISTS sidecar_assessment_results (
+    id TEXT PRIMARY KEY,
+    assessment_id TEXT NOT NULL REFERENCES sidecar_assessments(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES sidecar_assessment_items(id) ON DELETE CASCADE,
+    answer TEXT,
+    correct INTEGER,
+    grading TEXT NOT NULL CHECK(grading IN ('deterministic', 'unscored')),
+    feedback TEXT NOT NULL DEFAULT '',
+    advisory INTEGER NOT NULL DEFAULT 0,
+    owner_note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    UNIQUE(assessment_id, item_id)
+  )`)
+  database.run(`CREATE TABLE IF NOT EXISTS sidecar_tutor_lessons (
+    hash TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`)
+  database.run(`CREATE TABLE IF NOT EXISTS sidecar_tutor_turns (
+    id TEXT PRIMARY KEY,
+    course_key TEXT NOT NULL,
+    lesson_key TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    lesson_hash TEXT NOT NULL REFERENCES sidecar_tutor_lessons(hash),
+    context_meta TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`)
+  database.run('CREATE INDEX IF NOT EXISTS sidecar_tutor_scope ON sidecar_tutor_turns(course_key, lesson_key, created_at)')
 }
 
 export function openDatabase(path: string): Database {

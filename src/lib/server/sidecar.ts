@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { complete, ModelError } from './ai'
 import { setting } from './config'
 import { readJson } from './input'
+import { handleSidecarActivities } from './sidecar-activities'
 
 export const SIDECAR_API_VERSION = 1
 
@@ -420,6 +421,9 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
         return Response.json({ attempt: toPracticeAttempt(result.row) })
       }
     }
+
+    const activityResponse = await handleSidecarActivities(database, subPath, url, request, now, completeFn)
+    if (activityResponse) return activityResponse
 
     return Response.json({ error: 'Not found' }, { status: 404 })
   }
