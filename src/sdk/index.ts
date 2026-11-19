@@ -10,6 +10,10 @@ export type ExerciseSnapshot = {
 
 export type PracticeExercise = ExerciseSnapshot & {
   key: string
+  promptHtml?: string
+  optionHtmls?: string[]
+  answerHtml?: string
+  explanationHtml?: string
 }
 
 export type PracticeBank = {

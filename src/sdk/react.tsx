@@ -323,11 +323,15 @@ export function NoriPractice({
               )}
             </div>
 
-            <div className="nori-card__prompt">{renderRichText(exercise.prompt)}</div>
+            {exercise.promptHtml ? (
+              <div className="nori-card__prompt" dangerouslySetInnerHTML={{ __html: exercise.promptHtml }} />
+            ) : (
+              <div className="nori-card__prompt">{renderRichText(exercise.prompt)}</div>
+            )}
 
             {exercise.type === 'multiple_choice' ? (
               <div className="nori-options" role="radiogroup" aria-label={exercise.prompt}>
-                {exercise.options.map((option) => (
+                {exercise.options.map((option, optIdx) => (
                   <label key={option} className="nori-option">
                     <input
                       type="radio"
@@ -337,7 +341,11 @@ export function NoriPractice({
                       checked={value === option}
                       onChange={() => setInputs((prev) => ({ ...prev, [exercise.key]: option }))}
                     />
-                    <span>{renderInlineMarkdown(option)}</span>
+                    {exercise.optionHtmls?.[optIdx] ? (
+                      <span dangerouslySetInnerHTML={{ __html: exercise.optionHtmls[optIdx]! }} />
+                    ) : (
+                      <span>{renderInlineMarkdown(option)}</span>
+                    )}
                   </label>
                 ))}
               </div>
@@ -386,8 +394,17 @@ export function NoriPractice({
             {hasSubmitted && (
               <details className="nori-details">
                 <summary>Reference answer &amp; explanation</summary>
-                <div className="nori-attempt__answer">{renderRichText(exercise.answer)}</div>
-                {exercise.explanation && <div className="nori-muted">{renderRichText(exercise.explanation)}</div>}
+                {exercise.answerHtml ? (
+                  <div className="nori-attempt__answer" dangerouslySetInnerHTML={{ __html: exercise.answerHtml }} />
+                ) : (
+                  <div className="nori-attempt__answer">{renderRichText(exercise.answer)}</div>
+                )}
+                {exercise.explanation &&
+                  (exercise.explanationHtml ? (
+                    <div className="nori-muted" dangerouslySetInnerHTML={{ __html: exercise.explanationHtml }} />
+                  ) : (
+                    <div className="nori-muted">{renderRichText(exercise.explanation)}</div>
+                  ))}
               </details>
             )}
 
@@ -697,14 +714,20 @@ export function NoriAssessment({
             </div>
           </div>
 
-          {active.items.map((item) => (
+          {active.items.map((item) => {
+            const bankEx = exercises.find((e) => e.key === item.exerciseKey)
+            return (
             <div key={item.id} className="nori-attempt">
-              <div className="nori-card__prompt">{renderRichText(item.prompt)}</div>
+              {bankEx?.promptHtml ? (
+                <div className="nori-card__prompt" dangerouslySetInnerHTML={{ __html: bankEx.promptHtml }} />
+              ) : (
+                <div className="nori-card__prompt">{renderRichText(item.prompt)}</div>
+              )}
               {active.status === 'active' ? (
                 <>
                   {item.type === 'multiple_choice' ? (
                     <div className="nori-options">
-                      {item.options.map((opt) => (
+                      {item.options.map((opt, optIdx) => (
                         <label key={opt} className="nori-option">
                           <input
                             type="radio"
@@ -713,7 +736,11 @@ export function NoriAssessment({
                             checked={(answers[item.id] ?? '') === opt}
                             onChange={() => setAnswers((prev) => ({ ...prev, [item.id]: opt }))}
                           />
-                          <span>{renderInlineMarkdown(opt)}</span>
+                          {bankEx?.optionHtmls?.[optIdx] ? (
+                            <span dangerouslySetInnerHTML={{ __html: bankEx.optionHtmls[optIdx]! }} />
+                          ) : (
+                            <span>{renderInlineMarkdown(opt)}</span>
+                          )}
                         </label>
                       ))}
                     </div>
@@ -740,7 +767,11 @@ export function NoriAssessment({
                   {item.referenceAnswer && (
                     <details className="nori-details">
                       <summary>Reference answer</summary>
-                      <div className="nori-attempt__answer">{renderRichText(item.referenceAnswer)}</div>
+                      {bankEx?.answerHtml ? (
+                        <div className="nori-attempt__answer" dangerouslySetInnerHTML={{ __html: bankEx.answerHtml }} />
+                      ) : (
+                        <div className="nori-attempt__answer">{renderRichText(item.referenceAnswer)}</div>
+                      )}
                     </details>
                   )}
                   {item.result?.feedback && <div className="nori-feedback">{renderRichText(item.result.feedback)}</div>}
@@ -772,7 +803,8 @@ export function NoriAssessment({
                 </>
               )}
             </div>
-          ))}
+            )
+          })}
 
           {active.status === 'active' && (
             <button type="button" data-ui="nori" className="nori-btn nori-btn--primary" disabled={busy === 'submit'} onClick={handleSubmit}>
