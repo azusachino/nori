@@ -9,7 +9,8 @@ RUN bun install --production --frozen-lockfile
 FROM oven/bun:1-alpine AS runtime
 
 RUN apk add --no-cache tini ca-certificates \
-    && install -d -o bun -g bun -m 0700 /data
+    && mkdir -p /data \
+    && chown -R bun:bun /data
 
 WORKDIR /app
 COPY --from=build --chown=bun:bun /build/node_modules ./node_modules

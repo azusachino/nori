@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { drizzle } from 'drizzle-orm/bun-sqlite'
 import { migrate as runDrizzleMigrations } from 'drizzle-orm/bun-sqlite/migrator'
-import { chmodSync, mkdirSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sidecarSchema } from './schema'
@@ -15,10 +15,9 @@ export function migrate(database: Database) {
 }
 
 export function openDatabase(path: string): Database {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  mkdirSync(dirname(path), { recursive: true })
   const database = new Database(path, { create: true })
   try {
-    chmodSync(path, 0o600)
     database.run('PRAGMA journal_mode = WAL')
     database.run('PRAGMA foreign_keys = ON')
     migrate(database)
