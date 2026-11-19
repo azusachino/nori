@@ -4,14 +4,12 @@
   "type": "module",
   "exports": {
     ".": {
-      "bun": "./src/sdk/index.ts",
-      "types": "./dist/sdk/index.d.ts",
-      "default": "./dist/sdk/index.js"
+      "types": "./src/sdk/index.ts",
+      "default": "./src/sdk/index.ts"
     },
     "./react": {
-      "bun": "./src/sdk/react.tsx",
-      "types": "./dist/sdk/react.d.ts",
-      "default": "./dist/sdk/react.js"
+      "types": "./src/sdk/react.tsx",
+      "default": "./src/sdk/react.tsx"
     },
     "./styles.css": "./src/sdk/nori.css",
     "./package.json": "./package.json"
