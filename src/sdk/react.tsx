@@ -26,7 +26,7 @@ export type NoriPracticeProps = {
   title?: string
 }
 
-const INLINE_TOKEN_RE = /(\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\))/g
+const INLINE_TOKEN_RE = /(\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|``([^`]+)``|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\))/g
 
 export function renderInlineMarkdown(text: string): ReactNode[] {
   const nodes: ReactNode[] = []
@@ -47,13 +47,15 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
         </a>,
       )
     } else if (match[4] !== undefined) {
-      nodes.push(<code key={`c-${key++}`}>{match[4]}</code>)
+      nodes.push(<code key={`c2-${key++}`}>{match[4]}</code>)
     } else if (match[5] !== undefined) {
-      nodes.push(<strong key={`b-${key++}`}>{match[5]}</strong>)
-    } else if (match[6] !== undefined && match[7] !== undefined) {
+      nodes.push(<code key={`c-${key++}`}>{match[5]}</code>)
+    } else if (match[6] !== undefined) {
+      nodes.push(<strong key={`b-${key++}`}>{match[6]}</strong>)
+    } else if (match[7] !== undefined && match[8] !== undefined) {
       nodes.push(
-        <a key={`l-${key++}`} href={match[7]}>
-          {match[6]}
+        <a key={`l-${key++}`} href={match[8]}>
+          {match[7]}
         </a>,
       )
     }
@@ -66,10 +68,12 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
 }
 
 export function renderRichText(text: string): ReactNode {
-  const parts = text.split(/(```[\s\S]*?```)/g)
+  const normalized = text.replace(/\r\n/g, '\n')
+  const parts = normalized.split(/(```[\s\S]*?(?:```|$))/g)
   return parts.map((part, idx) => {
-    if (part.startsWith('```') && part.endsWith('```')) {
-      const inner = part.slice(3, -3).replace(/^[a-zA-Z0-9_-]+\n/, '')
+    if (part.startsWith('```')) {
+      const closed = part.endsWith('```') && part.length >= 6 ? part.slice(3, -3) : part.slice(3)
+      const inner = closed.replace(/^[a-zA-Z0-9_+-]*[ \t]*\n/, '').replace(/\n$/, '')
       return (
         <pre key={`pre-${idx}`} className="nori-codeblock">
           <code>{inner}</code>
@@ -451,7 +455,7 @@ export function NoriPractice({
                       </div>
 
                       {drifted && <div className="nori-muted">Prompt at attempt time: {renderInlineMarkdown(attempt.exerciseSnapshot.prompt)}</div>}
-                      <p className="nori-attempt__answer">{attempt.answer}</p>
+                      <div className="nori-attempt__answer">{renderRichText(attempt.answer)}</div>
 
                       {attempt.feedback && (
                         <div className="nori-feedback">
@@ -781,7 +785,7 @@ export function NoriAssessment({
                 </>
               ) : (
                 <>
-                  <p className="nori-attempt__answer">{item.answer ?? '(Unanswered)'}</p>
+                  <div className="nori-attempt__answer">{item.answer ? renderRichText(item.answer) : '(Unanswered)'}</div>
                   {item.result && (
                     <span
                       className={`nori-badge ${
@@ -960,7 +964,7 @@ export function NoriTutor({
                   <label key={a.id} className="nori-option">
                     <input type="checkbox" data-ui="nori" checked={selectedIds.includes(a.id)} onChange={() => toggleAttempt(a.id)} />
                     <span>
-                      <strong>{a.exerciseKey}:</strong> {a.answer.slice(0, 100)}
+                      <strong>{a.exerciseKey}:</strong> {renderRichText(a.answer)}
                     </span>
                   </label>
                 ))}
