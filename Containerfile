@@ -1,18 +1,24 @@
-FROM azusachino.com/media-base:py3.14-trixie-r2
+# syntax=docker/dockerfile:1
 
-RUN groupadd --system nori \
-    && useradd --system --gid nori nori
+FROM oven/bun:1-alpine AS build
 
-WORKDIR /app
-
+WORKDIR /build
 COPY package.json bun.lock ./
 RUN bun install --production --frozen-lockfile
 
-COPY drizzle ./drizzle
-COPY src ./src
+FROM oven/bun:1-alpine AS runtime
 
-RUN mkdir -p /data && chown -R nori:nori /app /data
-USER nori
+RUN apk add --no-cache tini ca-certificates \
+    && install -d -o bun -g bun -m 0700 /data
+
+WORKDIR /app
+COPY --from=build --chown=bun:bun /build/node_modules ./node_modules
+COPY --chown=bun:bun package.json ./
+COPY --chown=bun:bun drizzle ./drizzle
+COPY --chown=bun:bun src/sidecar-server.ts ./src/sidecar-server.ts
+COPY --chown=bun:bun src/lib ./src/lib
+
+USER bun
 
 ENV NORI_HOST=0.0.0.0 \
     NORI_PORT=3001 \
@@ -20,5 +26,5 @@ ENV NORI_HOST=0.0.0.0 \
     NORI_DATABASE_PATH=/data/nori.sqlite
 
 EXPOSE 3001
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["bun", "run", "src/sidecar-server.ts"]
