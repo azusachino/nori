@@ -120,7 +120,7 @@ export function IconPenLine() {
 }
 
 export function IconExerciseType({ type }: { type: SidecarExerciseType }) {
-  if (type === 'multiple_choice') return <IconListChecks />
+  if (type === 'multiple_choice' || type === 'multiple_select') return <IconListChecks />
   if (type === 'code') return <IconCode />
   return <IconPenLine />
 }

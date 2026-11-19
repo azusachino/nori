@@ -7,14 +7,20 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { openDatabase } from '../lib/server/database'
 import { createSidecarApi, hashExerciseSnapshot } from '../lib/server/sidecar'
 import {
+  checkBalancedDelimiters,
+  checkCloze,
+  checkDeterministicExercise,
   checkMultipleChoice,
+  checkMultipleSelect,
   computeContentHash,
   formatAttemptsAsMarkdown,
   NoriApiError,
   NoriClient,
   resolveNoriIslandProps,
+  verifyCodeInBrowser,
   type ExerciseSnapshot,
 } from './index'
+import { runDigestCli } from '../cli/digest'
 import { renderInlineMarkdown, renderRichText } from './react'
 
 const dirs: string[] = []
@@ -167,5 +173,86 @@ describe('Nori SDK client and helpers', () => {
 
     const inlineHtml = renderToStaticMarkup(createElement('span', null, renderInlineMarkdown('`32,768` floats (`~128 KB` in `float32`)')))
     expect(inlineHtml).toBe('<span><code>32,768</code> floats (<code>~128 KB</code> in <code>float32</code>)</span>')
+  })
+
+  test('supports multiple_select and cloze deterministic exercises, spaced review queue, and recall digest CLI', async () => {
+    const dbPath = tempDbPath()
+    const db = openDatabase(dbPath)
+    try {
+      const api = createSidecarApi(db)
+      const client = new NoriClient({
+        baseUrl: 'http://127.0.0.1:3001/api/nori/v1',
+        fetchFn: (input, init) => api(new Request(input instanceof Request ? input : String(input), init)),
+      })
+
+      const multiSnap: ExerciseSnapshot = {
+        type: 'multiple_select',
+        prompt: 'Which two layers appear inside a pre-norm TransformerBlock?',
+        options: ['Multi-Head Causal Attention', 'MaxPool2d', 'Feed-Forward Network (MLP)'],
+        answer: 'Multi-Head Causal Attention\nFeed-Forward Network (MLP)',
+        explanation: 'Each block has pre-norm MHA and pre-norm FFN.',
+      }
+      expect(checkMultipleSelect(multiSnap, 'Feed-Forward Network (MLP)\nMulti-Head Causal Attention')).toBe(true)
+      expect(checkMultipleSelect(multiSnap, 'Multi-Head Causal Attention')).toBe(false)
+
+      const clozeSnap: ExerciseSnapshot = {
+        type: 'cloze',
+        prompt: 'For B=8, T=64, D=64, how many total floats are in the tensor?',
+        options: [],
+        answer: '32,768 | 32768',
+        explanation: '8 * 64 * 64 = 32,768',
+      }
+      expect(checkCloze(clozeSnap, '`32,768`')).toBe(true)
+      expect(checkCloze(clozeSnap, '32768')).toBe(true)
+      expect(checkDeterministicExercise(clozeSnap, '4096')).toBe(false)
+
+      await client.createAttempt({
+        courseKey: 'ai/build-llm-from-scratch',
+        lessonKey: '01-understanding-large-language-models',
+        exerciseKey: 'q-multi',
+        exerciseSnapshot: multiSnap,
+        answer: 'Multi-Head Causal Attention',
+      })
+      const clozeAttempt = await client.createAttempt({
+        courseKey: 'ai/build-llm-from-scratch',
+        lessonKey: '01-understanding-large-language-models',
+        exerciseKey: 'q-cloze',
+        exerciseSnapshot: clozeSnap,
+        answer: '32768',
+      })
+      expect(clozeAttempt.grading).toBe('deterministic')
+      expect(clozeAttempt.correct).toBe(1)
+
+      const review = await client.getReviewQueue({ courseKey: 'ai/build-llm-from-scratch' })
+      expect(review.summary.totalTracked).toBe(2)
+      expect(review.summary.incorrectCount).toBe(1)
+      expect(review.items[0]?.exerciseKey).toBe('q-multi')
+      expect(review.items[0]?.reason).toBe('incorrect')
+      expect(review.items[1]?.exerciseKey).toBe('q-cloze')
+      expect(review.items[1]?.streak).toBe(1)
+
+      const digest = await client.getRecallDigest({ courseKey: 'ai/build-llm-from-scratch' })
+      expect(digest.stats.distinctExercises).toBe(2)
+      expect(digest.stats.weakSpotsCount).toBe(1)
+      expect(digest.markdown).toContain('## nori recall digest — ai/build-llm-from-scratch')
+      expect(digest.markdown).toContain('q-multi')
+
+      const cliDigest = await runDigestCli(['--db', dbPath, '--course', 'ai/build-llm-from-scratch'])
+      expect(cliDigest.markdown).toContain('## nori recall digest — ai/build-llm-from-scratch')
+    } finally {
+      db.close()
+    }
+  })
+
+  test('verifyCodeInBrowser checks delimiter balance, expected reference calls, and forbidden tokens', async () => {
+    const ref = 'Use `nn.Embedding` directly:\n\n```python\nemb = torch.nn.Embedding(50257, 64)\nh = emb(x)\n```'
+    const prompt = 'Write a 2-line PyTorch snippet using nn.Embedding(50257, 64) without materializing one_hot(x).'
+
+    const good = await verifyCodeInBrowser('emb = torch.nn.Embedding(50257, 64)\nh = emb(x)', ref, prompt)
+    expect(good.passed).toBe(true)
+
+    const bad = await verifyCodeInBrowser('emb = one_hot(x', ref, prompt)
+    expect(bad.passed).toBe(false)
+    expect(checkBalancedDelimiters('emb = one_hot(x').passed).toBe(false)
   })
 })

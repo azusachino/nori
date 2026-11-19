@@ -1,5 +1,6 @@
 export { NoriPractice, type NoriPracticeProps } from './components/NoriPractice'
 export { NoriAssessment, type NoriAssessmentProps } from './components/NoriAssessment'
 export { NoriTutor, type NoriTutorProps } from './components/NoriTutor'
+export { NoriReviewQueue, type NoriReviewQueueProps } from './components/NoriReviewQueue'
 export { renderInlineMarkdown, renderRichText } from './components/markdown'
 export * from './components/icons'

@@ -14,7 +14,9 @@ import {
   sidecarTutorTurns,
 } from './schema'
 import {
+  gradeDeterministicExercise,
   hashExerciseSnapshot,
+  isDeterministicExerciseType,
   parseExerciseSnapshot,
   practiceAdvisoryPrompt,
   validateCourseKey,
@@ -22,6 +24,7 @@ import {
   validateLessonKey,
   type ExerciseSnapshot,
 } from './sidecar'
+import { buildRecallDigest, buildReviewQueue } from './review'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const LARGE_BODY_LIMIT = 262144
@@ -53,8 +56,9 @@ function finalizeAssessmentRow(tx: SidecarOrm, row: AssessmentRow, status: 'subm
   for (const item of items) {
     const snap = JSON.parse(item.exerciseSnapshot) as ExerciseSnapshot
     const saved = answers.get(item.id) ?? null
-    const grading = snap.type === 'multiple_choice' ? 'deterministic' : 'unscored'
-    const correct = grading === 'deterministic' ? (saved === snap.answer ? 1 : 0) : null
+    const grading = isDeterministicExerciseType(snap.type) ? 'deterministic' : 'unscored'
+    const correct =
+      grading === 'deterministic' ? (saved !== null ? gradeDeterministicExercise(snap, saved).correct : 0) : null
     tx.insert(sidecarAssessmentResults)
       .values({
         id: crypto.randomUUID(),
@@ -409,16 +413,16 @@ export async function handleSidecarActivities(
       if (expectedVersion !== undefined && row.version !== expectedVersion) {
         return Response.json({ error: 'This assessment changed. Reload it.', assessment: buildAssessmentDetail(orm, row, ts) }, { status: 409 })
       }
-      const item = orm
-        .select()
-        .from(sidecarAssessmentItems)
-        .where(and(eq(sidecarAssessmentItems.id, body.itemId), eq(sidecarAssessmentItems.assessmentId, assessmentId)))
-        .get()
-      if (!item) return Response.json({ error: 'Assessment item not found.' }, { status: 404 })
-      const snap = JSON.parse(item.exerciseSnapshot) as ExerciseSnapshot
-      if (snap.type === 'multiple_choice') {
-        return Response.json({ error: 'Multiple-choice results are deterministic and do not need advisory feedback.' }, { status: 409 })
-      }
+        const item = orm
+          .select()
+          .from(sidecarAssessmentItems)
+          .where(and(eq(sidecarAssessmentItems.id, body.itemId), eq(sidecarAssessmentItems.assessmentId, assessmentId)))
+          .get()
+        if (!item) return Response.json({ error: 'Assessment item not found.' }, { status: 404 })
+        const snap = JSON.parse(item.exerciseSnapshot) as ExerciseSnapshot
+        if (isDeterministicExerciseType(snap.type)) {
+          return Response.json({ error: 'Deterministic exercise results do not need advisory feedback.' }, { status: 409 })
+        }
       const resRow = orm
         .select()
         .from(sidecarAssessmentResults)
@@ -688,6 +692,33 @@ export async function handleSidecarActivities(
         createdAt: r.createdAt,
       })),
     })
+  }
+
+  if (subPath === '/v1/review' && request.method === 'GET') {
+    const rawCourse = url.searchParams.get('courseKey')
+    let courseKey: string | null = null
+    if (rawCourse !== null && rawCourse !== '') {
+      courseKey = validateCourseKey(rawCourse)
+      if (!courseKey) {
+        return Response.json({ error: 'Provide a valid courseKey in <track>/<course> format.' }, { status: 400 })
+      }
+    }
+    const onlyDue = url.searchParams.get('onlyDue') === '1' || url.searchParams.get('onlyDue') === 'true'
+    const queue = buildReviewQueue(orm, { courseKey, onlyDue, now: now() })
+    return Response.json(queue, { headers: { 'Cache-Control': 'no-store' } })
+  }
+
+  if (subPath === '/v1/digest' && request.method === 'GET') {
+    const rawCourse = url.searchParams.get('courseKey')
+    let courseKey: string | null = null
+    if (rawCourse !== null && rawCourse !== '') {
+      courseKey = validateCourseKey(rawCourse)
+      if (!courseKey) {
+        return Response.json({ error: 'Provide a valid courseKey in <track>/<course> format.' }, { status: 400 })
+      }
+    }
+    const digest = buildRecallDigest(orm, { courseKey, now: now() })
+    return Response.json(digest, { headers: { 'Cache-Control': 'no-store' } })
   }
 
   return null

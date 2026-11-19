@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  checkMultipleChoice,
+  checkDeterministicExercise,
   computeContentHash,
   formatAttemptsAsMarkdown,
+  isDeterministicExercise,
   loadLocalDrafts,
   NoriApiError,
   NoriClient,
   removeLocalDraft,
   saveLocalDraft,
+  verifyCodeInBrowser,
+  type CodeVerificationResult,
   type HealthStatus,
   type LocalDraft,
   type PracticeAttempt,
@@ -20,6 +23,7 @@ import {
   IconBookmark,
   IconCheck,
   IconCheckCircle,
+  IconCode,
   IconCopy,
   IconExerciseType,
   IconSend,
@@ -66,6 +70,7 @@ export function NoriPractice({
   const [drafts, setDrafts] = useState<Record<string, LocalDraft>>(() => loadLocalDrafts(courseKey, lessonKey))
   const [inputs, setInputs] = useState<Record<string, string>>({})
   const [noteInputs, setNoteInputs] = useState<Record<string, string>>({})
+  const [codeResults, setCodeResults] = useState<Record<string, CodeVerificationResult>>({})
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [errorByKey, setErrorByKey] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState(false)
@@ -139,20 +144,59 @@ export function NoriPractice({
     return () => controller.abort()
   }, [refreshOnlineState])
 
+  const toggleMultiOption = (exerciseKey: string, option: string) => {
+    setInputs((prev) => {
+      const current = (prev[exerciseKey] ?? '')
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      const next = current.includes(option) ? current.filter((item) => item !== option) : [...current, option]
+      return { ...prev, [exerciseKey]: next.join('\n') }
+    })
+  }
+
+  const handleVerifyCode = async (exercise: PracticeExercise) => {
+    const code = inputs[exercise.key] ?? ''
+    setBusyKey(`verify:${exercise.key}`)
+    try {
+      const result = await verifyCodeInBrowser(code, exercise.answer, exercise.prompt)
+      setCodeResults((prev) => ({ ...prev, [exercise.key]: result }))
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
   const submitAnswer = async (exercise: PracticeExercise, overrideAnswer?: string) => {
     const answer = overrideAnswer ?? inputs[exercise.key] ?? ''
-    if (exercise.type === 'multiple_choice' ? !exercise.options.includes(answer) : !answer.trim()) {
+    const isValid =
+      exercise.type === 'multiple_choice'
+        ? exercise.options.includes(answer)
+        : exercise.type === 'multiple_select'
+          ? answer
+              .split('\n')
+              .map((s) => s.trim())
+              .filter(Boolean).length > 0
+          : Boolean(answer.trim())
+
+    if (!isValid) {
       setErrorByKey((prev) => ({ ...prev, [exercise.key]: 'Enter or select an answer first.' }))
       return
     }
     setErrorByKey((prev) => ({ ...prev, [exercise.key]: '' }))
+
+    if (exercise.type === 'code') {
+      const result = await verifyCodeInBrowser(answer, exercise.answer, exercise.prompt)
+      setCodeResults((prev) => ({ ...prev, [exercise.key]: result }))
+    }
+
+    const deterministic = isDeterministicExercise(exercise.type)
 
     if (connectionState !== 'online') {
       const localDraft: LocalDraft = {
         exerciseKey: exercise.key,
         answer,
         updatedAt: Date.now(),
-        correct: exercise.type === 'multiple_choice' ? (checkMultipleChoice(exercise, answer) ? 1 : 0) : null,
+        correct: deterministic ? (checkDeterministicExercise(exercise, answer) ? 1 : 0) : null,
       }
       setDrafts(saveLocalDraft(courseKey, lessonKey, localDraft))
       return
@@ -187,7 +231,7 @@ export function NoriPractice({
           exerciseKey: exercise.key,
           answer,
           updatedAt: Date.now(),
-          correct: exercise.type === 'multiple_choice' ? (checkMultipleChoice(exercise, answer) ? 1 : 0) : null,
+          correct: deterministic ? (checkDeterministicExercise(exercise, answer) ? 1 : 0) : null,
         }
         setDrafts(saveLocalDraft(courseKey, lessonKey, localDraft))
         setErrorByKey((prev) => ({ ...prev, [exercise.key]: 'Sidecar unreachable — saved locally as an unsent draft.' }))
@@ -295,8 +339,38 @@ export function NoriPractice({
         const hasSubmitted = exerciseAttempts.length > 0 || Boolean(localDraft)
 
         const latestAttempt = exerciseAttempts[exerciseAttempts.length - 1]
-        const latestAnswer = latestAttempt?.answer ?? localDraft?.answer
+        const latestAnswer = latestAttempt?.answer ?? localDraft?.answer ?? ''
         const latestCorrect = latestAttempt ? latestAttempt.correct : localDraft?.correct
+        const deterministic = isDeterministicExercise(exercise.type)
+        const codeVerify = codeResults[exercise.key]
+
+        const expectedSet =
+          exercise.type === 'multiple_select'
+            ? new Set(
+                exercise.answer
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              )
+            : null
+        const latestPickedSet =
+          exercise.type === 'multiple_select'
+            ? new Set(
+                latestAnswer
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              )
+            : null
+        const currentPickedSet =
+          exercise.type === 'multiple_select'
+            ? new Set(
+                value
+                  .split('\n')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              )
+            : null
 
         return (
           <article key={exercise.key} className="nori-card" data-exercise-key={exercise.key}>
@@ -307,7 +381,7 @@ export function NoriPractice({
                   <IconExerciseType type={exercise.type} />
                   <span>{exercise.type.replace('_', ' ')}</span>
                 </span>
-                {exercise.type === 'multiple_choice' && latestCorrect !== null && latestCorrect !== undefined && (
+                {deterministic && latestCorrect !== null && latestCorrect !== undefined && (
                   <span className={`nori-badge ${latestCorrect === 1 ? 'nori-badge--correct' : 'nori-badge--incorrect'}`}>
                     {latestCorrect === 1 ? <IconCheckCircle /> : <IconXCircle />}
                     <span>{latestCorrect === 1 ? 'Correct' : 'Incorrect'}</span>
@@ -371,11 +445,62 @@ export function NoriPractice({
                   )
                 })}
               </div>
+            ) : exercise.type === 'multiple_select' ? (
+              <div className="nori-options" role="group" aria-label={exercise.prompt}>
+                {exercise.options.map((option, optIdx) => {
+                  const isSelected = Boolean(currentPickedSet?.has(option))
+                  const isCorrectOption = hasSubmitted && Boolean(expectedSet?.has(option))
+                  const isWrongPicked = hasSubmitted && Boolean(latestPickedSet?.has(option)) && !expectedSet?.has(option)
+                  const classes = ['nori-option']
+                  if (isCorrectOption) classes.push('nori-option--correct')
+                  else if (isWrongPicked) classes.push('nori-option--incorrect')
+                  else if (isSelected) classes.push('nori-option--selected')
+
+                  return (
+                    <label key={option} className={classes.join(' ')}>
+                      <input
+                        type="checkbox"
+                        data-ui="nori"
+                        checked={isSelected}
+                        onChange={() => toggleMultiOption(exercise.key, option)}
+                      />
+                      <span className="nori-option__key" aria-hidden="true">
+                        {OPTION_KEYS[optIdx] ?? optIdx + 1}
+                      </span>
+                      {exercise.optionHtmls?.[optIdx] ? (
+                        <span className="nori-option__body" dangerouslySetInnerHTML={{ __html: exercise.optionHtmls[optIdx]! }} />
+                      ) : (
+                        <span className="nori-option__body">{renderInlineMarkdown(option)}</span>
+                      )}
+                      {isCorrectOption && (
+                        <span className="nori-option__status nori-option__status--correct" aria-label="Correct option">
+                          <IconCheckCircle />
+                        </span>
+                      )}
+                      {isWrongPicked && (
+                        <span className="nori-option__status nori-option__status--incorrect" aria-label="Incorrect choice">
+                          <IconXCircle />
+                        </span>
+                      )}
+                    </label>
+                  )
+                })}
+              </div>
+            ) : exercise.type === 'cloze' ? (
+              <input
+                type="text"
+                data-ui="nori"
+                className="nori-input-inline"
+                style={{ width: '100%', height: '38px' }}
+                placeholder="Type exact answer…"
+                value={value}
+                onChange={(e) => setInputs((prev) => ({ ...prev, [exercise.key]: e.target.value }))}
+              />
             ) : (
               <textarea
                 data-ui="nori"
                 className={`nori-textarea${exercise.type === 'code' ? ' nori-textarea--code' : ''}`}
-                placeholder={exercise.type === 'code' ? 'Write your code attempt (not executed)…' : 'Write your explanation in your own words…'}
+                placeholder={exercise.type === 'code' ? 'Write your code attempt (in-browser verification ready)…' : 'Write your explanation in your own words…'}
                 value={value}
                 onChange={(e) => setInputs((prev) => ({ ...prev, [exercise.key]: e.target.value }))}
               />
@@ -395,11 +520,24 @@ export function NoriPractice({
                     ? busyKey === `submit:${exercise.key}`
                       ? 'Saving…'
                       : 'Submit attempt'
-                    : exercise.type === 'multiple_choice'
+                    : deterministic
                       ? 'Check locally'
                       : 'Save draft locally'}
                 </span>
               </button>
+
+              {exercise.type === 'code' && (
+                <button
+                  type="button"
+                  data-ui="nori"
+                  className="nori-btn"
+                  disabled={busyKey === `verify:${exercise.key}` || !value.trim()}
+                  onClick={() => handleVerifyCode(exercise)}
+                >
+                  <IconCode />
+                  <span>{busyKey === `verify:${exercise.key}` ? 'Verifying…' : 'Verify code'}</span>
+                </button>
+              )}
 
               {connectionState === 'online' && localDraft && (
                 <button
@@ -414,6 +552,39 @@ export function NoriPractice({
                 </button>
               )}
             </div>
+
+            {codeVerify && (
+              <div className="nori-feedback" data-code-verified={codeVerify.passed ? 'pass' : 'fail'}>
+                <div className="nori-card__top">
+                  <div className="nori-feedback__header">
+                    <IconCode />
+                    <strong>In-browser code verification</strong>
+                  </div>
+                  <span className={`nori-badge ${codeVerify.passed ? 'nori-badge--correct' : 'nori-badge--incorrect'}`}>
+                    {codeVerify.passed ? <IconCheckCircle /> : <IconXCircle />}
+                    <span>{codeVerify.summary}</span>
+                  </span>
+                </div>
+                <div className="nori-options">
+                  {codeVerify.checks.map((c, idx) => (
+                    <div key={idx} className="nori-attempt__summary">
+                      <span className={`nori-badge ${c.passed ? 'nori-badge--correct' : 'nori-badge--incorrect'}`}>
+                        {c.passed ? <IconCheckCircle /> : <IconXCircle />}
+                        <span>{c.passed ? 'Pass' : 'Check'}</span>
+                      </span>
+                      <span className="nori-attempt__answer nori-attempt__answer--inline">{renderInlineMarkdown(c.label)}</span>
+                      {c.detail && <span className="nori-muted">({c.detail})</span>}
+                    </div>
+                  ))}
+                </div>
+                {codeVerify.output && (
+                  <pre className="nori-codeblock">
+                    <span className="nori-codeblock__lang">stdout</span>
+                    <code>{codeVerify.output}</code>
+                  </pre>
+                )}
+              </div>
+            )}
 
             {errorByKey[exercise.key] && <p className="nori-error">{errorByKey[exercise.key]}</p>}
 
