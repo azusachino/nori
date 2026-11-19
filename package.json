@@ -1,16 +1,42 @@
 {
   "name": "nori",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/sdk/index.ts",
+      "types": "./dist/sdk/index.d.ts",
+      "default": "./dist/sdk/index.js"
+    },
+    "./react": {
+      "bun": "./src/sdk/react.tsx",
+      "types": "./dist/sdk/react.d.ts",
+      "default": "./dist/sdk/react.js"
+    },
+    "./styles.css": "./src/sdk/nori.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/sdk",
+    "src/sdk",
+    "!src/sdk/**/*.test.*",
+    "README.md",
+    "LICENSE"
+  ],
   "imports": {
     "#/*": "./src/*"
   },
   "scripts": {
     "dev": "umask 077 && bun --bun vite dev --port 3000",
     "build": "bun --bun vite build",
+    "build:sdk": "rm -rf dist/sdk && tsc -p tsconfig.sdk.json",
     "start": "umask 077 && NITRO_HOST=127.0.0.1 HOST=127.0.0.1 bun .output/server/index.mjs",
     "sidecar": "umask 077 && bun run src/sidecar-server.ts",
     "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "dependencies": {
     "@tanstack/react-router": "1.170.46",

@@ -1,4 +1,4 @@
-.PHONY: dev build sidecar check e2e e2e-install e2e-probe
+.PHONY: dev build build-sdk sidecar check e2e e2e-install e2e-probe
 
 dev:
 	bun run dev
@@ -6,10 +6,13 @@ dev:
 build:
 	bun run build
 
+build-sdk:
+	bun run build:sdk
+
 sidecar:
 	bun run sidecar
 
-check: build
+check: build build-sdk
 	bun run typecheck
 	bun test src
 

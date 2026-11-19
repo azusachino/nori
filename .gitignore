@@ -1,6 +1,7 @@
 .tmp/
 node_modules/
 .output/
+dist/
 .data/
 .env
 .env.local
