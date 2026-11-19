@@ -1,6 +1,9 @@
 # nori
 
-A small self-hosted learning space, in development. The current slice provides a private library, planning conversations, editable course outlines, and ordered modules with multiple-choice, written and code exercises. A later module is generated on request, reviewed and accepted without rewriting accepted modules or learner work. Learners can take [timed or untimed assessments](docs/assessments.md) across selected accepted modules, with recorded results and explanations after finalization; exercises are module-level. AI feedback is advisory and code is not executed. Markdown, text and text-based PDFs (up to 5 MB and 50 pages) can be supplied as source material. A local [agent API](docs/agent-api.md) can create drafts for review. Courses can be exported as readable Markdown. The [contextual tutor](docs/tutor.md) answers questions about a selected accepted lesson and explicitly chosen attempts, with inspectable context and reviewable proposals. See [the MVP plan](docs/mvp-plan.md).
+An embeddable practice SDK and headless SQLite/LLM sidecar (`0.0.1` MVP) for personal static learning sites, alongside Nori's original self-hosted learning workspace.
+
+- **Sidecar & SDK (MVP):** run `make sidecar` (`127.0.0.1:3001`, `/api/nori/v1`) and embed `<NoriPractice />` (`nori/react`, `nori/styles.css`) into static course pages for persistent attempts, deterministic multiple-choice checking, advisory AI feedback, owner corrections, and offline local-draft fallback. See [the sidecar API contract](docs/sidecar-api.md) and [CHANGELOG.md](CHANGELOG.md).
+- **Standalone workspace:** the earlier slice provides a private library, planning conversations, editable course outlines, ordered modules, [timed or untimed assessments](docs/assessments.md), a [contextual tutor](docs/tutor.md), and a local [agent API](docs/agent-api.md). AI feedback is advisory and code is not executed. See [the MVP plan](docs/mvp-plan.md).
 
 ## Run locally
 
@@ -14,7 +17,7 @@ Existing `SAME_` configuration for the database, origin and model still works af
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks and pull request guidance.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks and pull request guidance, [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## License
 

@@ -1,0 +1,218 @@
+/* Scoped styles for Nori SDK islands; binds to Apricot semantic theme tokens. */
+.nori-practice {
+  --nori-bg: var(--bg, #f4f7f9);
+  --nori-surface: var(--surface, #ffffff);
+  --nori-ink: var(--ink, #2b2f32);
+  --nori-muted: var(--muted, #5d6871);
+  --nori-line: var(--line, #d5dde3);
+  --nori-primary: var(--primary, #107076);
+  --nori-font-mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+
+  background: var(--nori-surface);
+  color: var(--nori-ink);
+  border: 1px solid var(--nori-line);
+  border-radius: 12px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.nori-practice__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--nori-line);
+  padding-bottom: 0.75rem;
+}
+
+.nori-practice__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.nori-practice__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nori-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--nori-line);
+  background: var(--nori-bg);
+  color: var(--nori-muted);
+}
+
+.nori-badge--online {
+  border-color: var(--nori-primary);
+  color: var(--nori-primary);
+}
+
+.nori-badge--warn {
+  border-style: dashed;
+}
+
+.nori-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 36px;
+  padding: 0.4rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--nori-line);
+  background: var(--nori-bg);
+  color: var(--nori-ink);
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.nori-btn:hover:not(:disabled) {
+  border-color: var(--nori-primary);
+}
+
+.nori-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.nori-btn--primary {
+  background: var(--nori-primary);
+  border-color: var(--nori-primary);
+  color: #ffffff;
+}
+
+.nori-card {
+  border: 1px solid var(--nori-line);
+  border-radius: 10px;
+  padding: 1rem;
+  background: var(--nori-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.nori-card__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.nori-card__prompt {
+  margin: 0;
+  font-weight: 500;
+  white-space: pre-wrap;
+}
+
+.nori-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.nori-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--nori-line);
+  background: var(--nori-surface);
+  cursor: pointer;
+}
+
+.nori-option input[type="radio"] {
+  margin-top: 0.2rem;
+}
+
+.nori-textarea {
+  width: 100%;
+  min-height: 96px;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--nori-line);
+  background: var(--nori-surface);
+  color: var(--nori-ink);
+  font: inherit;
+  resize: vertical;
+}
+
+.nori-textarea--code {
+  font-family: var(--nori-font-mono);
+  font-size: 0.875rem;
+}
+
+.nori-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nori-error {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #b42318;
+}
+
+.nori-muted {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--nori-muted);
+}
+
+.nori-history {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  border-top: 1px solid var(--nori-line);
+  padding-top: 0.75rem;
+}
+
+.nori-attempt {
+  border: 1px solid var(--nori-line);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: var(--nori-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.nori-attempt__answer {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.nori-feedback {
+  border-left: 3px solid var(--nori-primary);
+  padding: 0.45rem 0.75rem;
+  background: var(--nori-bg);
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}
+
+.nori-details {
+  font-size: 0.9rem;
+}
+
+.nori-details summary {
+  cursor: pointer;
+  color: var(--nori-primary);
+  font-weight: 500;
+}
