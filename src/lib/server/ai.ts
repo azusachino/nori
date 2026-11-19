@@ -15,7 +15,7 @@ export function withRecentHistory(prefix: Message[], history: Message[], suffix:
   return [...prefix, ...history.slice(start), ...suffix]
 }
 
-export async function complete(messages: Message[], maxTokens = 2000): Promise<string> {
+export async function complete(messages: Message[], maxTokens = 4096): Promise<string> {
   if (messages.reduce((total, message) => total + message.content.length, 0) > CONTEXT_LIMIT) throw new ModelError('The material is too long for one request. Remove a source or shorten the conversation or draft outline, then try again.')
   const base = setting('LLM_BASE_URL')
   const model = setting('LLM_MODEL')
@@ -28,9 +28,13 @@ export async function complete(messages: Message[], maxTokens = 2000): Promise<s
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`
   const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ model, messages, max_tokens: maxTokens }), redirect: 'error', signal: AbortSignal.timeout(90000) })
   if (!response.ok) throw new ModelError(`The model provider returned an error (${response.status}).`)
-  const data = await response.json() as { choices?: { message?: { content?: unknown }; finish_reason?: string }[] }
+  const data = await response.json() as { choices?: { message?: { content?: unknown; reasoning_content?: unknown }; finish_reason?: string }[] }
   const choice = data.choices?.[0]
-  const content = choice?.message?.content
-  if (typeof content !== 'string' || !content.trim() || content.length > 40000 || choice?.finish_reason === 'length') throw new ModelError('The model returned an incomplete or invalid response. Please retry.')
-  return content.trim()
+  const rawContent = typeof choice?.message?.content === 'string' && choice.message.content.trim()
+    ? choice.message.content
+    : typeof choice?.message?.reasoning_content === 'string'
+      ? choice.message.reasoning_content
+      : null
+  if (!rawContent || !rawContent.trim() || rawContent.length > 40000) throw new ModelError('The model returned an incomplete or invalid response. Please retry.')
+  return rawContent.trim()
 }

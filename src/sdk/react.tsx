@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   checkMultipleChoice,
   computeContentHash,
@@ -24,6 +24,60 @@ export type NoriPracticeProps = {
   exercises?: PracticeExercise[]
   apiBaseUrl?: string
   title?: string
+}
+
+const INLINE_TOKEN_RE = /(\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|`([^`]+)`|\*\*([^*]+)\*\*|\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\))/g
+
+export function renderInlineMarkdown(text: string): ReactNode[] {
+  const nodes: ReactNode[] = []
+  let lastIndex = 0
+  let key = 0
+  for (const match of text.matchAll(INLINE_TOKEN_RE)) {
+    const idx = match.index ?? 0
+    if (idx > lastIndex) {
+      nodes.push(text.slice(lastIndex, idx))
+    }
+    if (match[2] !== undefined) {
+      const rawTarget = match[2].trim()
+      const label = (match[3] ?? rawTarget.split('/').pop() ?? rawTarget).trim()
+      const href = `/${rawTarget.replace(/\.md$/, '').replace(/\/index$/, '')}`
+      nodes.push(
+        <a key={`w-${key++}`} href={href}>
+          {label}
+        </a>,
+      )
+    } else if (match[4] !== undefined) {
+      nodes.push(<code key={`c-${key++}`}>{match[4]}</code>)
+    } else if (match[5] !== undefined) {
+      nodes.push(<strong key={`b-${key++}`}>{match[5]}</strong>)
+    } else if (match[6] !== undefined && match[7] !== undefined) {
+      nodes.push(
+        <a key={`l-${key++}`} href={match[7]}>
+          {match[6]}
+        </a>,
+      )
+    }
+    lastIndex = idx + match[0].length
+  }
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex))
+  }
+  return nodes
+}
+
+export function renderRichText(text: string): ReactNode {
+  const parts = text.split(/(```[\s\S]*?```)/g)
+  return parts.map((part, idx) => {
+    if (part.startsWith('```') && part.endsWith('```')) {
+      const inner = part.slice(3, -3).replace(/^[a-zA-Z0-9_-]+\n/, '')
+      return (
+        <pre key={`pre-${idx}`} className="nori-codeblock">
+          <code>{inner}</code>
+        </pre>
+      )
+    }
+    return <Fragment key={`txt-${idx}`}>{renderInlineMarkdown(part)}</Fragment>
+  })
 }
 
 export function NoriPractice({
@@ -269,7 +323,7 @@ export function NoriPractice({
               )}
             </div>
 
-            <p className="nori-card__prompt">{exercise.prompt}</p>
+            <div className="nori-card__prompt">{renderRichText(exercise.prompt)}</div>
 
             {exercise.type === 'multiple_choice' ? (
               <div className="nori-options" role="radiogroup" aria-label={exercise.prompt}>
@@ -283,7 +337,7 @@ export function NoriPractice({
                       checked={value === option}
                       onChange={() => setInputs((prev) => ({ ...prev, [exercise.key]: option }))}
                     />
-                    <span>{option}</span>
+                    <span>{renderInlineMarkdown(option)}</span>
                   </label>
                 ))}
               </div>
@@ -332,8 +386,8 @@ export function NoriPractice({
             {hasSubmitted && (
               <details className="nori-details">
                 <summary>Reference answer &amp; explanation</summary>
-                <p className="nori-attempt__answer">{exercise.answer}</p>
-                {exercise.explanation && <p className="nori-muted">{exercise.explanation}</p>}
+                <div className="nori-attempt__answer">{renderRichText(exercise.answer)}</div>
+                {exercise.explanation && <div className="nori-muted">{renderRichText(exercise.explanation)}</div>}
               </details>
             )}
 
@@ -356,14 +410,14 @@ export function NoriPractice({
                         {drifted && <span className="nori-badge nori-badge--warn">Previous question version</span>}
                       </div>
 
-                      {drifted && <p className="nori-muted">Prompt at attempt time: {attempt.exerciseSnapshot.prompt}</p>}
+                      {drifted && <div className="nori-muted">Prompt at attempt time: {renderInlineMarkdown(attempt.exerciseSnapshot.prompt)}</div>}
                       <p className="nori-attempt__answer">{attempt.answer}</p>
 
                       {attempt.feedback && (
                         <div className="nori-feedback">
                           <strong>Advisory AI feedback:</strong>
                           {'\n'}
-                          {attempt.feedback}
+                          {renderRichText(attempt.feedback)}
                         </div>
                       )}
 
@@ -645,7 +699,7 @@ export function NoriAssessment({
 
           {active.items.map((item) => (
             <div key={item.id} className="nori-attempt">
-              <p className="nori-card__prompt">{item.prompt}</p>
+              <div className="nori-card__prompt">{renderRichText(item.prompt)}</div>
               {active.status === 'active' ? (
                 <>
                   {item.type === 'multiple_choice' ? (
@@ -659,14 +713,14 @@ export function NoriAssessment({
                             checked={(answers[item.id] ?? '') === opt}
                             onChange={() => setAnswers((prev) => ({ ...prev, [item.id]: opt }))}
                           />
-                          <span>{opt}</span>
+                          <span>{renderInlineMarkdown(opt)}</span>
                         </label>
                       ))}
                     </div>
                   ) : (
                     <textarea
                       data-ui="nori"
-                      className="nori-textarea"
+                      className={`nori-textarea${item.type === 'code' ? ' nori-textarea--code' : ''}`}
                       value={answers[item.id] ?? ''}
                       onChange={(e) => setAnswers((prev) => ({ ...prev, [item.id]: e.target.value }))}
                     />
@@ -686,10 +740,10 @@ export function NoriAssessment({
                   {item.referenceAnswer && (
                     <details className="nori-details">
                       <summary>Reference answer</summary>
-                      <p className="nori-attempt__answer">{item.referenceAnswer}</p>
+                      <div className="nori-attempt__answer">{renderRichText(item.referenceAnswer)}</div>
                     </details>
                   )}
-                  {item.result?.feedback && <div className="nori-feedback">{item.result.feedback}</div>}
+                  {item.result?.feedback && <div className="nori-feedback">{renderRichText(item.result.feedback)}</div>}
                   {item.result?.grading === 'unscored' && item.answer && (
                     <button
                       type="button"
@@ -856,7 +910,7 @@ export function NoriTutor({
               {turns.map((t) => (
                 <div key={t.id} className={t.role === 'assistant' ? 'nori-feedback' : 'nori-attempt'}>
                   <strong>{t.role === 'assistant' ? 'Tutor' : 'You'}</strong>
-                  <p className="nori-attempt__answer">{t.content}</p>
+                  <div className="nori-attempt__answer">{renderRichText(t.content)}</div>
                   {t.role === 'assistant' && (
                     <p className="nori-muted">
                       Context: {t.contextMeta.contextChars} chars · {t.contextMeta.attemptIds.length} attempt(s) · {t.contextMeta.historyTurnsIncluded} prior turn(s)
