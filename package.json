@@ -56,6 +56,7 @@
     "build:sdk": "rm -rf dist/sdk && tsc -p tsconfig.sdk.json",
     "start": "umask 077 && NITRO_HOST=127.0.0.1 HOST=127.0.0.1 bun .output/server/index.mjs",
     "sidecar": "umask 077 && bun run src/sidecar-server.ts",
+    "db:generate": "drizzle-kit generate",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
@@ -67,6 +68,7 @@
     "@tanstack/react-start": "1.169.5",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
+    "drizzle-orm": "0.45.4",
     "nitro": "3.0.260610-beta",
     "radix-ui": "1.8.1",
     "react": "^19.2.0",
@@ -82,6 +84,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
+    "drizzle-kit": "0.31.11",
     "tailwindcss": "4.3.5",
     "typescript": "^6.0.2",
     "vite": "^8.0.0"

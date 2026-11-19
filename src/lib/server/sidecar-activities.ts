@@ -1,7 +1,18 @@
-import type { Database } from 'bun:sqlite'
+import { and, asc, count, desc, eq, sql } from 'drizzle-orm'
+import type { BunSQLiteDatabase } from 'drizzle-orm/bun-sqlite'
 import { createHash } from 'node:crypto'
 import { complete, CONTEXT_LIMIT, ModelError } from './ai'
 import { readJson } from './input'
+import {
+  practiceAttempts,
+  sidecarAssessmentAnswers,
+  sidecarAssessmentItems,
+  sidecarAssessmentResults,
+  sidecarAssessments,
+  sidecarSchema,
+  sidecarTutorLessons,
+  sidecarTutorTurns,
+} from './schema'
 import {
   hashExerciseSnapshot,
   parseExerciseSnapshot,
@@ -15,65 +26,8 @@ import {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const LARGE_BODY_LIMIT = 262144
 
-type AssessmentRow = {
-  id: string
-  course_key: string
-  title: string
-  mode: 'timed' | 'untimed'
-  duration_seconds: number | null
-  status: 'planned' | 'active' | 'submitted' | 'expired'
-  created_at: number
-  started_at: number | null
-  deadline_at: number | null
-  submitted_at: number | null
-  finalized_at: number | null
-  version: number
-}
-
-type AssessmentItemRow = {
-  id: string
-  assessment_id: string
-  position: number
-  lesson_key: string
-  exercise_key: string
-  content_hash: string
-  exercise_snapshot: string
-}
-
-type AssessmentAnswerRow = { item_id: string; answer: string; updated_at: number }
-
-type AssessmentResultRow = {
-  id: string
-  item_id: string
-  answer: string | null
-  correct: number | null
-  grading: 'deterministic' | 'unscored'
-  feedback: string
-  advisory: number
-  owner_note: string
-  created_at: number
-}
-
-type TutorTurnRow = {
-  id: string
-  course_key: string
-  lesson_key: string
-  role: 'user' | 'assistant'
-  content: string
-  lesson_hash: string
-  context_meta: string
-  created_at: number
-}
-
-type PracticeAttemptMiniRow = {
-  id: string
-  exercise_key: string
-  exercise_snapshot: string
-  answer: string
-  correct: number | null
-  feedback: string
-  owner_note: string
-}
+type SidecarOrm = BunSQLiteDatabase<typeof sidecarSchema>
+type AssessmentRow = typeof sidecarAssessments.$inferSelect
 
 function parseExpectedVersion(value: unknown): number | undefined | null {
   if (value === undefined) return undefined
@@ -81,58 +35,84 @@ function parseExpectedVersion(value: unknown): number | undefined | null {
   return value
 }
 
-function finalizeAssessmentRow(database: Database, row: AssessmentRow, status: 'submitted' | 'expired', now: number): AssessmentRow {
-  const items = database
-    .query('SELECT * FROM sidecar_assessment_items WHERE assessment_id = ? ORDER BY position ASC')
-    .all(row.id) as AssessmentItemRow[]
+function finalizeAssessmentRow(tx: SidecarOrm, row: AssessmentRow, status: 'submitted' | 'expired', now: number): AssessmentRow {
+  const items = tx
+    .select()
+    .from(sidecarAssessmentItems)
+    .where(eq(sidecarAssessmentItems.assessmentId, row.id))
+    .orderBy(asc(sidecarAssessmentItems.position))
+    .all()
   const answers = new Map(
-    (database.query('SELECT item_id, answer, updated_at FROM sidecar_assessment_answers WHERE assessment_id = ?').all(row.id) as AssessmentAnswerRow[]).map(
-      (a) => [a.item_id, a.answer],
-    ),
+    tx
+      .select()
+      .from(sidecarAssessmentAnswers)
+      .where(eq(sidecarAssessmentAnswers.assessmentId, row.id))
+      .all()
+      .map((a) => [a.itemId, a.answer]),
   )
   for (const item of items) {
-    const snap = JSON.parse(item.exercise_snapshot) as ExerciseSnapshot
+    const snap = JSON.parse(item.exerciseSnapshot) as ExerciseSnapshot
     const saved = answers.get(item.id) ?? null
     const grading = snap.type === 'multiple_choice' ? 'deterministic' : 'unscored'
     const correct = grading === 'deterministic' ? (saved === snap.answer ? 1 : 0) : null
-    database.run(
-      `INSERT OR IGNORE INTO sidecar_assessment_results
-        (id, assessment_id, item_id, answer, correct, grading, feedback, advisory, owner_note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, '', 0, '', ?)`,
-      [crypto.randomUUID(), row.id, item.id, saved, correct, grading, now],
-    )
+    tx.insert(sidecarAssessmentResults)
+      .values({
+        id: crypto.randomUUID(),
+        assessmentId: row.id,
+        itemId: item.id,
+        answer: saved,
+        correct,
+        grading,
+        feedback: '',
+        advisory: 0,
+        ownerNote: '',
+        createdAt: now,
+      })
+      .onConflictDoNothing()
+      .run()
   }
   const submittedAt = status === 'submitted' ? now : null
-  database.run(
-    'UPDATE sidecar_assessments SET status = ?, submitted_at = ?, finalized_at = ?, version = version + 1 WHERE id = ? AND status = ?',
-    [status, submittedAt, now, row.id, 'active'],
-  )
-  return database.query('SELECT * FROM sidecar_assessments WHERE id = ?').get(row.id) as AssessmentRow
+  tx.update(sidecarAssessments)
+    .set({ status, submittedAt, finalizedAt: now, version: sql`${sidecarAssessments.version} + 1` })
+    .where(and(eq(sidecarAssessments.id, row.id), eq(sidecarAssessments.status, 'active')))
+    .run()
+  return tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, row.id)).get()!
 }
 
-function loadAssessment(database: Database, id: string, now: number): AssessmentRow | null {
-  return database.transaction(() => {
-    const row = database.query('SELECT * FROM sidecar_assessments WHERE id = ?').get(id) as AssessmentRow | null
+function loadAssessment(orm: SidecarOrm, id: string, now: number): AssessmentRow | null {
+  return orm.transaction((tx) => {
+    const row = tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, id)).get()
     if (!row) return null
-    if (row.status === 'active' && row.mode === 'timed' && row.deadline_at !== null && now >= row.deadline_at) {
-      return finalizeAssessmentRow(database, row, 'expired', now)
+    if (row.status === 'active' && row.mode === 'timed' && row.deadlineAt !== null && now >= row.deadlineAt) {
+      return finalizeAssessmentRow(tx, row, 'expired', now)
     }
     return row
-  })()
+  })
 }
 
-function buildAssessmentDetail(database: Database, row: AssessmentRow, now: number) {
+function buildAssessmentDetail(orm: SidecarOrm, row: AssessmentRow, now: number) {
   const finalized = row.status === 'submitted' || row.status === 'expired'
-  const items = database
-    .query('SELECT * FROM sidecar_assessment_items WHERE assessment_id = ? ORDER BY position ASC')
-    .all(row.id) as AssessmentItemRow[]
+  const items = orm
+    .select()
+    .from(sidecarAssessmentItems)
+    .where(eq(sidecarAssessmentItems.assessmentId, row.id))
+    .orderBy(asc(sidecarAssessmentItems.position))
+    .all()
   const answers = new Map(
-    (database.query('SELECT item_id, answer, updated_at FROM sidecar_assessment_answers WHERE assessment_id = ?').all(row.id) as AssessmentAnswerRow[]).map(
-      (a) => [a.item_id, a.answer],
-    ),
+    orm
+      .select()
+      .from(sidecarAssessmentAnswers)
+      .where(eq(sidecarAssessmentAnswers.assessmentId, row.id))
+      .all()
+      .map((a) => [a.itemId, a.answer]),
   )
   const results = new Map(
-    (database.query('SELECT * FROM sidecar_assessment_results WHERE assessment_id = ?').all(row.id) as AssessmentResultRow[]).map((r) => [r.item_id, r]),
+    orm
+      .select()
+      .from(sidecarAssessmentResults)
+      .where(eq(sidecarAssessmentResults.assessmentId, row.id))
+      .all()
+      .map((r) => [r.itemId, r]),
   )
 
   let answeredCount = 0
@@ -142,7 +122,7 @@ function buildAssessmentDetail(database: Database, row: AssessmentRow, now: numb
   let unscoredCount = 0
 
   const mappedItems = items.map((item) => {
-    const snap = JSON.parse(item.exercise_snapshot) as ExerciseSnapshot
+    const snap = JSON.parse(item.exerciseSnapshot) as ExerciseSnapshot
     const savedAnswer = answers.get(item.id) ?? null
     if (savedAnswer !== null && savedAnswer !== '') answeredCount++
     const res = results.get(item.id)
@@ -158,9 +138,9 @@ function buildAssessmentDetail(database: Database, row: AssessmentRow, now: numb
     return {
       id: item.id,
       position: item.position,
-      lessonKey: item.lesson_key,
-      exerciseKey: item.exercise_key,
-      contentHash: item.content_hash,
+      lessonKey: item.lessonKey,
+      exerciseKey: item.exerciseKey,
+      contentHash: item.contentHash,
       type: snap.type,
       prompt: snap.prompt,
       options: snap.options,
@@ -173,27 +153,27 @@ function buildAssessmentDetail(database: Database, row: AssessmentRow, now: numb
             correct: res.correct,
             feedback: res.feedback,
             advisory: Boolean(res.advisory),
-            ownerNote: res.owner_note,
+            ownerNote: res.ownerNote,
           }
         : null,
     }
   })
 
   const remainingMs =
-    row.status === 'active' && row.mode === 'timed' && row.deadline_at !== null ? Math.max(0, row.deadline_at - now) : null
+    row.status === 'active' && row.mode === 'timed' && row.deadlineAt !== null ? Math.max(0, row.deadlineAt - now) : null
 
   return {
     id: row.id,
-    courseKey: row.course_key,
+    courseKey: row.courseKey,
     title: row.title,
     mode: row.mode,
-    durationSeconds: row.duration_seconds,
+    durationSeconds: row.durationSeconds,
     status: row.status,
-    createdAt: row.created_at,
-    startedAt: row.started_at,
-    deadlineAt: row.deadline_at,
-    submittedAt: row.submitted_at,
-    finalizedAt: row.finalized_at,
+    createdAt: row.createdAt,
+    startedAt: row.startedAt,
+    deadlineAt: row.deadlineAt,
+    submittedAt: row.submittedAt,
+    finalizedAt: row.finalizedAt,
     version: row.version,
     serverNow: now,
     remainingMs,
@@ -210,7 +190,7 @@ function buildAssessmentDetail(database: Database, row: AssessmentRow, now: numb
 }
 
 export async function handleSidecarActivities(
-  database: Database,
+  orm: SidecarOrm,
   subPath: string,
   url: URL,
   request: Request,
@@ -221,14 +201,17 @@ export async function handleSidecarActivities(
   if (subPath === '/v1/assessments' && request.method === 'GET') {
     const courseKey = validateCourseKey(url.searchParams.get('courseKey'))
     if (!courseKey) return Response.json({ error: 'Provide a valid courseKey in <track>/<course> format.' }, { status: 400 })
-    const rows = database
-      .query('SELECT id FROM sidecar_assessments WHERE course_key = ? ORDER BY created_at DESC, rowid DESC')
-      .all(courseKey) as { id: string }[]
+    const rows = orm
+      .select({ id: sidecarAssessments.id })
+      .from(sidecarAssessments)
+      .where(eq(sidecarAssessments.courseKey, courseKey))
+      .orderBy(desc(sidecarAssessments.createdAt))
+      .all()
     const ts = now()
     const assessments = rows
-      .map((r) => loadAssessment(database, r.id, ts))
+      .map((r) => loadAssessment(orm, r.id, ts))
       .filter((r): r is AssessmentRow => r !== null)
-      .map((r) => buildAssessmentDetail(database, r, ts))
+      .map((r) => buildAssessmentDetail(orm, r, ts))
     return Response.json({ courseKey, assessments }, { headers: { 'Cache-Control': 'no-store' } })
   }
 
@@ -273,22 +256,35 @@ export async function handleSidecarActivities(
 
     const id = crypto.randomUUID()
     const ts = now()
-    database.transaction(() => {
-      database.run(
-        `INSERT INTO sidecar_assessments (id, course_key, title, mode, duration_seconds, status, created_at, version)
-         VALUES (?, ?, ?, ?, ?, 'planned', ?, 0)`,
-        [id, courseKey, (body.title as string).trim(), mode, durationSeconds, ts],
-      )
-      parsedItems.forEach((item, index) => {
-        database.run(
-          `INSERT INTO sidecar_assessment_items (id, assessment_id, position, lesson_key, exercise_key, content_hash, exercise_snapshot)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [crypto.randomUUID(), id, index, item.lessonKey, item.exerciseKey, item.contentHash, JSON.stringify(item.snapshot)],
-        )
+    orm.transaction((tx) => {
+      tx.insert(sidecarAssessments)
+        .values({
+          id,
+          courseKey,
+          title: (body.title as string).trim(),
+          mode,
+          durationSeconds,
+          status: 'planned',
+          createdAt: ts,
+          version: 0,
+        })
+        .run()
+      parsedItems.forEach((item, position) => {
+        tx.insert(sidecarAssessmentItems)
+          .values({
+            id: crypto.randomUUID(),
+            assessmentId: id,
+            position,
+            lessonKey: item.lessonKey,
+            exerciseKey: item.exerciseKey,
+            contentHash: item.contentHash,
+            exerciseSnapshot: JSON.stringify(item.snapshot),
+          })
+          .run()
       })
-    })()
-    const row = loadAssessment(database, id, ts)!
-    return Response.json({ assessment: buildAssessmentDetail(database, row, ts) }, { status: 201 })
+    })
+    const row = loadAssessment(orm, id, ts)!
+    return Response.json({ assessment: buildAssessmentDetail(orm, row, ts) }, { status: 201 })
   }
 
   const assessMatch = subPath.match(/^\/v1\/assessments\/([^/]+)(?:\/(start|answers|submit|feedback|correct))?$/)
@@ -296,31 +292,35 @@ export async function handleSidecarActivities(
     const [, assessmentId, action] = assessMatch
     if (!UUID_RE.test(assessmentId)) return Response.json({ error: 'Assessment not found.' }, { status: 404 })
     const ts = now()
-    const row = loadAssessment(database, assessmentId, ts)
+    const row = loadAssessment(orm, assessmentId, ts)
     if (!row) return Response.json({ error: 'Assessment not found.' }, { status: 404 })
 
     if (!action) {
       if (request.method !== 'GET') return Response.json({ error: 'Not found' }, { status: 404 })
-      return Response.json({ assessment: buildAssessmentDetail(database, row, ts) }, { headers: { 'Cache-Control': 'no-store' } })
+      return Response.json({ assessment: buildAssessmentDetail(orm, row, ts) }, { headers: { 'Cache-Control': 'no-store' } })
     }
     if (request.method !== 'POST') return Response.json({ error: 'Not found' }, { status: 404 })
 
     if (action === 'start') {
-      const result = database.transaction(() => {
-        const current = loadAssessment(database, assessmentId, ts)!
-        if (current.status === 'submitted' || current.status === 'expired') return { status: 409 as const, row: current }
-        if (current.status === 'active') return { status: 200 as const, row: current }
-        const deadline = current.mode === 'timed' && current.duration_seconds !== null ? ts + current.duration_seconds * 1000 : null
-        database.run(
-          'UPDATE sidecar_assessments SET status = ?, started_at = ?, deadline_at = ?, version = version + 1 WHERE id = ? AND status = ?',
-          ['active', ts, deadline, assessmentId, 'planned'],
-        )
-        return { status: 200 as const, row: database.query('SELECT * FROM sidecar_assessments WHERE id = ?').get(assessmentId) as AssessmentRow }
-      })()
+      const result = orm.transaction((tx) => {
+        const current = tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, assessmentId)).get()!
+        const effective =
+          current.status === 'active' && current.mode === 'timed' && current.deadlineAt !== null && ts >= current.deadlineAt
+            ? finalizeAssessmentRow(tx, current, 'expired', ts)
+            : current
+        if (effective.status === 'submitted' || effective.status === 'expired') return { status: 409 as const, row: effective }
+        if (effective.status === 'active') return { status: 200 as const, row: effective }
+        const deadlineAt = effective.mode === 'timed' && effective.durationSeconds !== null ? ts + effective.durationSeconds * 1000 : null
+        tx.update(sidecarAssessments)
+          .set({ status: 'active', startedAt: ts, deadlineAt, version: sql`${sidecarAssessments.version} + 1` })
+          .where(and(eq(sidecarAssessments.id, assessmentId), eq(sidecarAssessments.status, 'planned')))
+          .run()
+        return { status: 200 as const, row: tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, assessmentId)).get()! }
+      })
       if (result.status === 409) {
-        return Response.json({ error: 'This assessment has already been finalized.', assessment: buildAssessmentDetail(database, result.row, ts) }, { status: 409 })
+        return Response.json({ error: 'This assessment has already been finalized.', assessment: buildAssessmentDetail(orm, result.row, ts) }, { status: 409 })
       }
-      return Response.json({ assessment: buildAssessmentDetail(database, result.row, ts) })
+      return Response.json({ assessment: buildAssessmentDetail(orm, result.row, ts) })
     }
 
     const body = request.headers.get('content-type')?.toLowerCase().startsWith('application/json')
@@ -336,53 +336,69 @@ export async function handleSidecarActivities(
       if (typeof body.itemId !== 'string' || typeof body.answer !== 'string' || body.answer.length > 20000) {
         return Response.json({ error: 'Provide itemId and answer.' }, { status: 400 })
       }
-      const result = database.transaction(() => {
-        const current = loadAssessment(database, assessmentId, ts)!
+      const itemId = body.itemId
+      const rawAnswer = body.answer
+      const result = orm.transaction((tx) => {
+        const raw = tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, assessmentId)).get()!
+        const current =
+          raw.status === 'active' && raw.mode === 'timed' && raw.deadlineAt !== null && ts >= raw.deadlineAt
+            ? finalizeAssessmentRow(tx, raw, 'expired', ts)
+            : raw
         if (current.status === 'expired') return { status: 409 as const, error: 'The assessment deadline passed. Answers were finalized.', row: current }
         if (current.status !== 'active') return { status: 409 as const, error: 'Start the assessment before saving answers.', row: current }
         if (expectedVersion !== undefined && current.version !== expectedVersion) {
           return { status: 409 as const, error: 'This assessment changed. Reload it.', row: current }
         }
-        const item = database
-          .query('SELECT * FROM sidecar_assessment_items WHERE id = ? AND assessment_id = ?')
-          .get(body.itemId as string, assessmentId) as AssessmentItemRow | null
+        const item = tx
+          .select()
+          .from(sidecarAssessmentItems)
+          .where(and(eq(sidecarAssessmentItems.id, itemId), eq(sidecarAssessmentItems.assessmentId, assessmentId)))
+          .get()
         if (!item) return { status: 404 as const, error: 'Assessment item not found.' }
-        const snap = JSON.parse(item.exercise_snapshot) as ExerciseSnapshot
-        const value = snap.type === 'multiple_choice' ? (body.answer as string) : (body.answer as string).trim()
+        const snap = JSON.parse(item.exerciseSnapshot) as ExerciseSnapshot
+        const value = snap.type === 'multiple_choice' ? rawAnswer : rawAnswer.trim()
         if (snap.type === 'multiple_choice' && !snap.options.includes(value)) {
           return { status: 400 as const, error: 'Multiple-choice answer must match one option exactly.' }
         }
-        database.run(
-          `INSERT INTO sidecar_assessment_answers (assessment_id, item_id, answer, updated_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(assessment_id, item_id) DO UPDATE SET answer = excluded.answer, updated_at = excluded.updated_at`,
-          [assessmentId, item.id, value, ts],
-        )
-        database.run('UPDATE sidecar_assessments SET version = version + 1 WHERE id = ?', [assessmentId])
-        return { status: 200 as const, row: database.query('SELECT * FROM sidecar_assessments WHERE id = ?').get(assessmentId) as AssessmentRow }
-      })()
+        tx.insert(sidecarAssessmentAnswers)
+          .values({ assessmentId, itemId: item.id, answer: value, updatedAt: ts })
+          .onConflictDoUpdate({
+            target: [sidecarAssessmentAnswers.assessmentId, sidecarAssessmentAnswers.itemId],
+            set: { answer: value, updatedAt: ts },
+          })
+          .run()
+        tx.update(sidecarAssessments)
+          .set({ version: sql`${sidecarAssessments.version} + 1` })
+          .where(eq(sidecarAssessments.id, assessmentId))
+          .run()
+        return { status: 200 as const, row: tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, assessmentId)).get()! }
+      })
       if (result.status === 404) return Response.json({ error: result.error }, { status: 404 })
       if (result.status === 400) return Response.json({ error: result.error }, { status: 400 })
       if (result.status === 409) {
-        return Response.json({ error: result.error, assessment: buildAssessmentDetail(database, result.row, ts) }, { status: 409 })
+        return Response.json({ error: result.error, assessment: buildAssessmentDetail(orm, result.row, ts) }, { status: 409 })
       }
-      return Response.json({ assessment: buildAssessmentDetail(database, result.row, ts) })
+      return Response.json({ assessment: buildAssessmentDetail(orm, result.row, ts) })
     }
 
     if (action === 'submit') {
-      const result = database.transaction(() => {
-        const current = loadAssessment(database, assessmentId, ts)!
+      const result = orm.transaction((tx) => {
+        const raw = tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, assessmentId)).get()!
+        const current =
+          raw.status === 'active' && raw.mode === 'timed' && raw.deadlineAt !== null && ts >= raw.deadlineAt
+            ? finalizeAssessmentRow(tx, raw, 'expired', ts)
+            : raw
         if (current.status === 'expired') return { status: 409 as const, error: 'The assessment deadline passed before submission.', row: current }
         if (current.status !== 'active') return { status: 409 as const, error: 'This assessment cannot be submitted in its current state.', row: current }
         if (expectedVersion !== undefined && current.version !== expectedVersion) {
           return { status: 409 as const, error: 'This assessment changed. Reload it.', row: current }
         }
-        return { status: 200 as const, row: finalizeAssessmentRow(database, current, 'submitted', ts) }
-      })()
+        return { status: 200 as const, row: finalizeAssessmentRow(tx, current, 'submitted', ts) }
+      })
       if (result.status === 409) {
-        return Response.json({ error: result.error, assessment: buildAssessmentDetail(database, result.row, ts) }, { status: 409 })
+        return Response.json({ error: result.error, assessment: buildAssessmentDetail(orm, result.row, ts) }, { status: 409 })
       }
-      return Response.json({ assessment: buildAssessmentDetail(database, result.row, ts) })
+      return Response.json({ assessment: buildAssessmentDetail(orm, result.row, ts) })
     }
 
     if (action === 'feedback') {
@@ -391,19 +407,23 @@ export async function handleSidecarActivities(
         return Response.json({ error: 'Submit the assessment before requesting feedback.' }, { status: 409 })
       }
       if (expectedVersion !== undefined && row.version !== expectedVersion) {
-        return Response.json({ error: 'This assessment changed. Reload it.', assessment: buildAssessmentDetail(database, row, ts) }, { status: 409 })
+        return Response.json({ error: 'This assessment changed. Reload it.', assessment: buildAssessmentDetail(orm, row, ts) }, { status: 409 })
       }
-      const item = database
-        .query('SELECT * FROM sidecar_assessment_items WHERE id = ? AND assessment_id = ?')
-        .get(body.itemId, assessmentId) as AssessmentItemRow | null
+      const item = orm
+        .select()
+        .from(sidecarAssessmentItems)
+        .where(and(eq(sidecarAssessmentItems.id, body.itemId), eq(sidecarAssessmentItems.assessmentId, assessmentId)))
+        .get()
       if (!item) return Response.json({ error: 'Assessment item not found.' }, { status: 404 })
-      const snap = JSON.parse(item.exercise_snapshot) as ExerciseSnapshot
+      const snap = JSON.parse(item.exerciseSnapshot) as ExerciseSnapshot
       if (snap.type === 'multiple_choice') {
         return Response.json({ error: 'Multiple-choice results are deterministic and do not need advisory feedback.' }, { status: 409 })
       }
-      const resRow = database
-        .query('SELECT * FROM sidecar_assessment_results WHERE assessment_id = ? AND item_id = ?')
-        .get(assessmentId, item.id) as AssessmentResultRow | null
+      const resRow = orm
+        .select()
+        .from(sidecarAssessmentResults)
+        .where(and(eq(sidecarAssessmentResults.assessmentId, assessmentId), eq(sidecarAssessmentResults.itemId, item.id)))
+        .get()
       if (!resRow || !resRow.answer) return Response.json({ error: 'There is no saved answer for this item.' }, { status: 400 })
       const observedVersion = row.version
       let feedbackText: string
@@ -412,52 +432,64 @@ export async function handleSidecarActivities(
       } catch (error) {
         return Response.json({ error: error instanceof ModelError ? error.message : 'Model provider request failed.' }, { status: 502 })
       }
-      const updated = database.transaction(() => {
-        const current = database.query('SELECT * FROM sidecar_assessments WHERE id = ?').get(assessmentId) as AssessmentRow
+      const updated = orm.transaction((tx) => {
+        const current = tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, assessmentId)).get()!
         if (current.version !== observedVersion) return { status: 409 as const, row: current }
-        database.run('UPDATE sidecar_assessment_results SET feedback = ?, advisory = 1 WHERE assessment_id = ? AND item_id = ?', [
-          feedbackText,
-          assessmentId,
-          item.id,
-        ])
-        database.run('UPDATE sidecar_assessments SET version = version + 1 WHERE id = ? AND version = ?', [assessmentId, observedVersion])
-        return { status: 200 as const, row: database.query('SELECT * FROM sidecar_assessments WHERE id = ?').get(assessmentId) as AssessmentRow }
-      })()
+        tx.update(sidecarAssessmentResults)
+          .set({ feedback: feedbackText, advisory: 1 })
+          .where(and(eq(sidecarAssessmentResults.assessmentId, assessmentId), eq(sidecarAssessmentResults.itemId, item.id)))
+          .run()
+        tx.update(sidecarAssessments)
+          .set({ version: sql`${sidecarAssessments.version} + 1` })
+          .where(and(eq(sidecarAssessments.id, assessmentId), eq(sidecarAssessments.version, observedVersion)))
+          .run()
+        return { status: 200 as const, row: tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, assessmentId)).get()! }
+      })
       if (updated.status === 409) {
-        return Response.json({ error: 'This assessment changed while feedback was running. Reload it.', assessment: buildAssessmentDetail(database, updated.row, now()) }, { status: 409 })
+        return Response.json({ error: 'This assessment changed while feedback was running. Reload it.', assessment: buildAssessmentDetail(orm, updated.row, now()) }, { status: 409 })
       }
-      return Response.json({ assessment: buildAssessmentDetail(database, updated.row, now()) })
+      return Response.json({ assessment: buildAssessmentDetail(orm, updated.row, now()) })
     }
 
     if (action === 'correct') {
       if (typeof body.itemId !== 'string' || typeof body.ownerNote !== 'string' || body.ownerNote.length > 10000) {
         return Response.json({ error: 'Provide itemId and ownerNote up to 10,000 characters.' }, { status: 400 })
       }
-      const result = database.transaction(() => {
-        const current = loadAssessment(database, assessmentId, ts)!
+      const itemId = body.itemId
+      const note = body.ownerNote.trim()
+      const result = orm.transaction((tx) => {
+        const raw = tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, assessmentId)).get()!
+        const current =
+          raw.status === 'active' && raw.mode === 'timed' && raw.deadlineAt !== null && ts >= raw.deadlineAt
+            ? finalizeAssessmentRow(tx, raw, 'expired', ts)
+            : raw
         if (current.status !== 'submitted' && current.status !== 'expired') {
           return { status: 409 as const, error: 'Submit the assessment before recording corrections.', row: current }
         }
         if (expectedVersion !== undefined && current.version !== expectedVersion) {
           return { status: 409 as const, error: 'This assessment changed. Reload it.', row: current }
         }
-        const exists = database
-          .query('SELECT id FROM sidecar_assessment_results WHERE assessment_id = ? AND item_id = ?')
-          .get(assessmentId, body.itemId as string)
+        const exists = tx
+          .select({ id: sidecarAssessmentResults.id })
+          .from(sidecarAssessmentResults)
+          .where(and(eq(sidecarAssessmentResults.assessmentId, assessmentId), eq(sidecarAssessmentResults.itemId, itemId)))
+          .get()
         if (!exists) return { status: 404 as const, error: 'Assessment item not found.' }
-        database.run('UPDATE sidecar_assessment_results SET owner_note = ? WHERE assessment_id = ? AND item_id = ?', [
-          (body.ownerNote as string).trim(),
-          assessmentId,
-          body.itemId as string,
-        ])
-        database.run('UPDATE sidecar_assessments SET version = version + 1 WHERE id = ?', [assessmentId])
-        return { status: 200 as const, row: database.query('SELECT * FROM sidecar_assessments WHERE id = ?').get(assessmentId) as AssessmentRow }
-      })()
+        tx.update(sidecarAssessmentResults)
+          .set({ ownerNote: note })
+          .where(and(eq(sidecarAssessmentResults.assessmentId, assessmentId), eq(sidecarAssessmentResults.itemId, itemId)))
+          .run()
+        tx.update(sidecarAssessments)
+          .set({ version: sql`${sidecarAssessments.version} + 1` })
+          .where(eq(sidecarAssessments.id, assessmentId))
+          .run()
+        return { status: 200 as const, row: tx.select().from(sidecarAssessments).where(eq(sidecarAssessments.id, assessmentId)).get()! }
+      })
       if (result.status === 404) return Response.json({ error: result.error }, { status: 404 })
       if (result.status === 409) {
-        return Response.json({ error: result.error, assessment: buildAssessmentDetail(database, result.row, ts) }, { status: 409 })
+        return Response.json({ error: result.error, assessment: buildAssessmentDetail(orm, result.row, ts) }, { status: 409 })
       }
-      return Response.json({ assessment: buildAssessmentDetail(database, result.row, ts) })
+      return Response.json({ assessment: buildAssessmentDetail(orm, result.row, ts) })
     }
   }
 
@@ -468,9 +500,12 @@ export async function handleSidecarActivities(
     if (!courseKey || !lessonKey) {
       return Response.json({ error: 'Provide valid courseKey and lessonKey.' }, { status: 400 })
     }
-    const rows = database
-      .query('SELECT * FROM sidecar_tutor_turns WHERE course_key = ? AND lesson_key = ? ORDER BY created_at ASC, rowid ASC')
-      .all(courseKey, lessonKey) as TutorTurnRow[]
+    const rows = orm
+      .select()
+      .from(sidecarTutorTurns)
+      .where(and(eq(sidecarTutorTurns.courseKey, courseKey), eq(sidecarTutorTurns.lessonKey, lessonKey)))
+      .orderBy(asc(sidecarTutorTurns.createdAt))
+      .all()
     return Response.json(
       {
         courseKey,
@@ -481,9 +516,9 @@ export async function handleSidecarActivities(
           id: r.id,
           role: r.role,
           content: r.content,
-          lessonHash: r.lesson_hash,
-          contextMeta: JSON.parse(r.context_meta),
-          createdAt: r.created_at,
+          lessonHash: r.lessonHash,
+          contextMeta: JSON.parse(r.contextMeta),
+          createdAt: r.createdAt,
         })),
       },
       { headers: { 'Cache-Control': 'no-store' } },
@@ -517,11 +552,13 @@ export async function handleSidecarActivities(
       return Response.json({ error: 'Duplicate attemptIds are not allowed.' }, { status: 400 })
     }
 
-    const selectedAttempts: PracticeAttemptMiniRow[] = []
+    const selectedAttempts = []
     for (const id of attemptIds) {
-      const attemptRow = database
-        .query('SELECT id, exercise_key, exercise_snapshot, answer, correct, feedback, owner_note FROM practice_attempts WHERE id = ? AND course_key = ? AND lesson_key = ?')
-        .get(id, courseKey, lessonKey) as PracticeAttemptMiniRow | null
+      const attemptRow = orm
+        .select()
+        .from(practiceAttempts)
+        .where(and(eq(practiceAttempts.id, id), eq(practiceAttempts.courseKey, courseKey), eq(practiceAttempts.lessonKey, lessonKey)))
+        .get()
       if (!attemptRow) return Response.json({ error: `Attempt ${id} not found in this lesson.` }, { status: 404 })
       selectedAttempts.push(attemptRow)
     }
@@ -531,22 +568,25 @@ export async function handleSidecarActivities(
     const messageText = body.message.trim()
     const lessonHash = createHash('sha256').update(JSON.stringify({ title: lessonTitle, body: lessonText })).digest('hex')
 
-    const priorRows = database
-      .query('SELECT * FROM sidecar_tutor_turns WHERE course_key = ? AND lesson_key = ? ORDER BY created_at ASC, rowid ASC')
-      .all(courseKey, lessonKey) as TutorTurnRow[]
+    const priorRows = orm
+      .select()
+      .from(sidecarTutorTurns)
+      .where(and(eq(sidecarTutorTurns.courseKey, courseKey), eq(sidecarTutorTurns.lessonKey, lessonKey)))
+      .orderBy(asc(sidecarTutorTurns.createdAt))
+      .all()
     const observedRevision = priorRows.length
 
     const attemptsBlock = selectedAttempts.length
       ? selectedAttempts
           .map((a) => {
-            const snap = JSON.parse(a.exercise_snapshot) as ExerciseSnapshot
+            const snap = JSON.parse(a.exerciseSnapshot) as ExerciseSnapshot
             return [
-              `Attempt ${a.id} (${a.exercise_key}):`,
+              `Attempt ${a.id} (${a.exerciseKey}):`,
               `Prompt: ${snap.prompt}`,
               `Learner answer: ${a.answer}`,
               a.correct !== null ? `Deterministic check: ${a.correct === 1 ? 'correct' : 'incorrect'}` : '',
               a.feedback ? `Existing advisory feedback: ${a.feedback}` : '',
-              a.owner_note ? `Owner correction: ${a.owner_note}` : '',
+              a.ownerNote ? `Owner correction: ${a.ownerNote}` : '',
             ]
               .filter(Boolean)
               .join('\n')
@@ -602,34 +642,33 @@ export async function handleSidecarActivities(
       historyTurnsDropped: droppedCount,
     }
 
-    const saved = database.transaction(() => {
-      const countRow = database
-        .query('SELECT COUNT(*) as count FROM sidecar_tutor_turns WHERE course_key = ? AND lesson_key = ?')
-        .get(courseKey, lessonKey) as { count: number }
-      if (countRow.count !== observedRevision) return { status: 409 as const }
+    const saved = orm.transaction((tx) => {
+      const countRow = tx
+        .select({ total: count() })
+        .from(sidecarTutorTurns)
+        .where(and(eq(sidecarTutorTurns.courseKey, courseKey), eq(sidecarTutorTurns.lessonKey, lessonKey)))
+        .get()
+      if ((countRow?.total ?? 0) !== observedRevision) return { status: 409 as const }
       const ts = now()
-      database.run('INSERT OR IGNORE INTO sidecar_tutor_lessons (hash, title, body, created_at) VALUES (?, ?, ?, ?)', [
-        lessonHash,
-        lessonTitle,
-        lessonText,
-        ts,
-      ])
+      tx.insert(sidecarTutorLessons)
+        .values({ hash: lessonHash, title: lessonTitle, body: lessonText, createdAt: ts })
+        .onConflictDoNothing()
+        .run()
       const metaJson = JSON.stringify(contextMeta)
-      database.run(
-        `INSERT INTO sidecar_tutor_turns (id, course_key, lesson_key, role, content, lesson_hash, context_meta, created_at)
-         VALUES (?, ?, ?, 'user', ?, ?, ?, ?)`,
-        [crypto.randomUUID(), courseKey, lessonKey, messageText, lessonHash, metaJson, ts],
-      )
-      database.run(
-        `INSERT INTO sidecar_tutor_turns (id, course_key, lesson_key, role, content, lesson_hash, context_meta, created_at)
-         VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?)`,
-        [crypto.randomUUID(), courseKey, lessonKey, reply, lessonHash, metaJson, ts + 1],
-      )
-      const allTurns = database
-        .query('SELECT * FROM sidecar_tutor_turns WHERE course_key = ? AND lesson_key = ? ORDER BY created_at ASC, rowid ASC')
-        .all(courseKey, lessonKey) as TutorTurnRow[]
+      tx.insert(sidecarTutorTurns)
+        .values([
+          { id: crypto.randomUUID(), courseKey, lessonKey, role: 'user', content: messageText, lessonHash, contextMeta: metaJson, createdAt: ts },
+          { id: crypto.randomUUID(), courseKey, lessonKey, role: 'assistant', content: reply, lessonHash, contextMeta: metaJson, createdAt: ts + 1 },
+        ])
+        .run()
+      const allTurns = tx
+        .select()
+        .from(sidecarTutorTurns)
+        .where(and(eq(sidecarTutorTurns.courseKey, courseKey), eq(sidecarTutorTurns.lessonKey, lessonKey)))
+        .orderBy(asc(sidecarTutorTurns.createdAt))
+        .all()
       return { status: 200 as const, turns: allTurns }
-    })()
+    })
 
     if (saved.status === 409) {
       return Response.json({ error: 'This tutor conversation changed while the model was running. Reload and retry.' }, { status: 409 })
@@ -644,9 +683,9 @@ export async function handleSidecarActivities(
         id: r.id,
         role: r.role,
         content: r.content,
-        lessonHash: r.lesson_hash,
-        contextMeta: JSON.parse(r.context_meta),
-        createdAt: r.created_at,
+        lessonHash: r.lessonHash,
+        contextMeta: JSON.parse(r.contextMeta),
+        createdAt: r.createdAt,
       })),
     })
   }
