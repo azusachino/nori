@@ -1,4 +1,12 @@
-export type SidecarExerciseType = 'multiple_choice' | 'written' | 'code'
+export {
+  checkBalancedDelimiters,
+  extractReferenceCode,
+  verifyCodeInBrowser,
+  type CodeCheckItem,
+  type CodeVerificationResult,
+} from './code-runner'
+
+export type SidecarExerciseType = 'multiple_choice' | 'multiple_select' | 'cloze' | 'written' | 'code'
 
 export type ExerciseSnapshot = {
   type: SidecarExerciseType
@@ -151,6 +159,50 @@ export type SendTutorInput = {
   lessonText: string
   attemptIds?: string[]
   message: string
+}
+
+export type ReviewReason = 'incorrect' | 'has_takeaway_note' | 'due_for_recall' | 'scheduled'
+
+export type ReviewQueueItem = {
+  courseKey: string
+  lessonKey: string
+  exerciseKey: string
+  attemptCount: number
+  lastAttemptAt: number
+  streak: number
+  intervalDays: number
+  dueAt: number
+  isDue: boolean
+  reason: ReviewReason
+  latestAttempt: PracticeAttempt
+}
+
+export type ReviewQueueResponse = {
+  courseKey: string | null
+  serverNow: number
+  summary: {
+    totalTracked: number
+    dueNow: number
+    incorrectCount: number
+    scheduledCount: number
+  }
+  items: ReviewQueueItem[]
+}
+
+export type RecallDigestResponse = {
+  courseKey: string | null
+  generatedAt: number
+  stats: {
+    totalAttempts: number
+    distinctExercises: number
+    correctCount: number
+    incorrectCount: number
+    unscoredCount: number
+    weakSpotsCount: number
+    takeawayNotesCount: number
+    tutorTurnsCount: number
+  }
+  markdown: string
 }
 
 export class NoriApiError extends Error {
@@ -347,13 +399,38 @@ export class NoriClient {
       signal,
     })
   }
+
+  async getReviewQueue(
+    params: { courseKey?: string; onlyDue?: boolean } = {},
+    signal?: AbortSignal,
+  ): Promise<ReviewQueueResponse> {
+    const query = new URLSearchParams()
+    if (params.courseKey) query.set('courseKey', params.courseKey)
+    if (params.onlyDue) query.set('onlyDue', '1')
+    const qs = query.toString()
+    return this.request(`/review${qs ? `?${qs}` : ''}`, { method: 'GET', signal })
+  }
+
+  async getRecallDigest(
+    params: { courseKey?: string } = {},
+    signal?: AbortSignal,
+  ): Promise<RecallDigestResponse> {
+    const query = new URLSearchParams()
+    if (params.courseKey) query.set('courseKey', params.courseKey)
+    const qs = query.toString()
+    return this.request(`/digest${qs ? `?${qs}` : ''}`, { method: 'GET', signal })
+  }
+}
+
+export function isDeterministicExercise(type: SidecarExerciseType): boolean {
+  return type === 'multiple_choice' || type === 'multiple_select' || type === 'cloze'
 }
 
 export function normalizeSnapshot(snapshot: ExerciseSnapshot): ExerciseSnapshot {
   return {
     type: snapshot.type,
     prompt: snapshot.prompt.trim(),
-    options: snapshot.type === 'multiple_choice' ? [...snapshot.options] : [],
+    options: snapshot.type === 'multiple_choice' || snapshot.type === 'multiple_select' ? [...snapshot.options] : [],
     answer: snapshot.type === 'multiple_choice' ? snapshot.answer : snapshot.answer.trim(),
     explanation: snapshot.explanation.trim(),
   }
@@ -377,6 +454,47 @@ export async function computeContentHash(snapshot: ExerciseSnapshot): Promise<st
 
 export function checkMultipleChoice(exercise: ExerciseSnapshot, answer: string): boolean {
   return exercise.type === 'multiple_choice' && exercise.options.includes(answer) && answer === exercise.answer
+}
+
+export function checkMultipleSelect(exercise: ExerciseSnapshot, answer: string): boolean {
+  if (exercise.type !== 'multiple_select') return false
+  const picked = Array.from(
+    new Set(
+      answer
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  )
+  const expected = Array.from(
+    new Set(
+      exercise.answer
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  )
+  return (
+    picked.length > 0 &&
+    picked.length === expected.length &&
+    picked.every((opt) => exercise.options.includes(opt) && expected.includes(opt))
+  )
+}
+
+export function checkCloze(exercise: ExerciseSnapshot, answer: string): boolean {
+  if (exercise.type !== 'cloze') return false
+  const norm = (s: string) => s.trim().replace(/^`+|`+$/g, '').replace(/\s+/g, ' ').toLowerCase()
+  const learner = norm(answer)
+  if (!learner) return false
+  const accepted = exercise.answer.split('|').map(norm).filter(Boolean)
+  return accepted.includes(learner)
+}
+
+export function checkDeterministicExercise(exercise: ExerciseSnapshot, answer: string): boolean {
+  if (exercise.type === 'multiple_choice') return checkMultipleChoice(exercise, answer)
+  if (exercise.type === 'multiple_select') return checkMultipleSelect(exercise, answer)
+  if (exercise.type === 'cloze') return checkCloze(exercise, answer)
+  return false
 }
 
 function draftStorageKey(courseKey: string, lessonKey: string): string {
@@ -483,7 +601,12 @@ export function resolveNoriIslandProps(
   const inferredLesson = lessonMatch?.[2]
 
   if (typeof props.courseKey !== 'string' && inferredCourse) props.courseKey = inferredCourse
-  if (typeof props.lessonKey !== 'string' && inferredLesson && componentName !== 'NoriAssessment') {
+  if (
+    typeof props.lessonKey !== 'string' &&
+    inferredLesson &&
+    componentName !== 'NoriAssessment' &&
+    componentName !== 'NoriReviewQueue'
+  ) {
     props.lessonKey = inferredLesson
   }
   const cKey = typeof props.courseKey === 'string' ? props.courseKey : undefined

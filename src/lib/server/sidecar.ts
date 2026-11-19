@@ -10,7 +10,79 @@ import { handleSidecarActivities } from './sidecar-activities'
 
 export const SIDECAR_API_VERSION = 1
 
-export type SidecarExerciseType = 'multiple_choice' | 'written' | 'code'
+export type SidecarExerciseType = 'multiple_choice' | 'multiple_select' | 'cloze' | 'written' | 'code'
+
+export function isDeterministicExerciseType(type: SidecarExerciseType): boolean {
+  return type === 'multiple_choice' || type === 'multiple_select' || type === 'cloze'
+}
+
+function normalizeClozeText(value: string): string {
+  return value
+    .trim()
+    .replace(/^`+|`+$/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+}
+
+export function gradeDeterministicExercise(
+  snapshot: ExerciseSnapshot,
+  rawAnswer: string,
+): { valid: boolean; error?: string; storedAnswer: string; correct: number } {
+  if (snapshot.type === 'multiple_choice') {
+    if (!snapshot.options.includes(rawAnswer)) {
+      return { valid: false, error: 'Multiple-choice answer must match one of the exercise options.', storedAnswer: '', correct: 0 }
+    }
+    return {
+      valid: true,
+      storedAnswer: rawAnswer,
+      correct: rawAnswer === snapshot.answer ? 1 : 0,
+    }
+  }
+  if (snapshot.type === 'multiple_select') {
+    const picked = rawAnswer
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (picked.length === 0 || !picked.every((opt) => snapshot.options.includes(opt))) {
+      return {
+        valid: false,
+        error: 'Multiple-select answer must select at least one valid exercise option.',
+        storedAnswer: '',
+        correct: 0,
+      }
+    }
+    const uniquePicked = Array.from(new Set(picked))
+    const expected = Array.from(
+      new Set(
+        snapshot.answer
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    )
+    const isMatch = uniquePicked.length === expected.length && uniquePicked.every((opt) => expected.includes(opt))
+    return {
+      valid: true,
+      storedAnswer: uniquePicked.join('\n'),
+      correct: isMatch ? 1 : 0,
+    }
+  }
+  // cloze
+  const trimmed = rawAnswer.trim()
+  if (!trimmed) {
+    return { valid: false, error: 'Enter an answer before submitting.', storedAnswer: '', correct: 0 }
+  }
+  const normalizedLearner = normalizeClozeText(trimmed)
+  const accepted = snapshot.answer
+    .split('|')
+    .map(normalizeClozeText)
+    .filter(Boolean)
+  return {
+    valid: true,
+    storedAnswer: trimmed,
+    correct: accepted.includes(normalizedLearner) ? 1 : 0,
+  }
+}
 
 export type ExerciseSnapshot = {
   type: SidecarExerciseType
@@ -77,8 +149,14 @@ export function parseExerciseSnapshot(raw: unknown): ExerciseSnapshot | { error:
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'exerciseSnapshot must be an object.' }
   const obj = raw as Record<string, unknown>
   const type = obj.type
-  if (type !== 'multiple_choice' && type !== 'written' && type !== 'code') {
-    return { error: 'exerciseSnapshot.type must be multiple_choice, written, or code.' }
+  if (
+    type !== 'multiple_choice' &&
+    type !== 'multiple_select' &&
+    type !== 'cloze' &&
+    type !== 'written' &&
+    type !== 'code'
+  ) {
+    return { error: 'exerciseSnapshot.type must be multiple_choice, multiple_select, cloze, written, or code.' }
   }
   if (typeof obj.prompt !== 'string' || !obj.prompt.trim() || obj.prompt.length > 10000) {
     return { error: 'exerciseSnapshot.prompt must be a non-empty string up to 10,000 characters.' }
@@ -91,22 +169,31 @@ export function parseExerciseSnapshot(raw: unknown): ExerciseSnapshot | { error:
     return { error: 'exerciseSnapshot.explanation must be a string up to 10,000 characters.' }
   }
   let options: string[] = []
-  if (type === 'multiple_choice') {
+  if (type === 'multiple_choice' || type === 'multiple_select') {
     if (
       !Array.isArray(obj.options) ||
       obj.options.length < 2 ||
       obj.options.length > 20 ||
       !obj.options.every((item) => typeof item === 'string' && item.length > 0 && item.length <= 2000)
     ) {
-      return { error: 'Multiple-choice exercises require 2 to 20 non-empty string options.' }
+      return { error: 'Choice exercises require 2 to 20 non-empty string options.' }
     }
     options = [...obj.options]
-    if (!options.includes(obj.answer)) {
+    if (type === 'multiple_choice' && !options.includes(obj.answer)) {
       return { error: 'Multiple-choice reference answer must match one option exactly.' }
+    }
+    if (type === 'multiple_select') {
+      const expected = obj.answer
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)
+      if (!expected.length || !expected.every((opt) => options.includes(opt))) {
+        return { error: 'Multiple-select reference answer lines must match exercise options.' }
+      }
     }
   } else if (obj.options !== undefined) {
     if (!Array.isArray(obj.options) || obj.options.length > 0) {
-      return { error: 'Written and code exercises must have an empty options array.' }
+      return { error: 'Cloze, written, and code exercises must have an empty options array.' }
     }
   }
   return {
@@ -280,12 +367,13 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
       let storedAnswer: string
       let correct: number | null
       let grading: 'deterministic' | 'unscored'
-      if (parsedSnapshot.type === 'multiple_choice') {
-        if (!parsedSnapshot.options.includes(body.answer)) {
-          return Response.json({ error: 'Multiple-choice answer must match one of the exercise options.' }, { status: 400 })
+      if (isDeterministicExerciseType(parsedSnapshot.type)) {
+        const graded = gradeDeterministicExercise(parsedSnapshot, body.answer)
+        if (!graded.valid) {
+          return Response.json({ error: graded.error ?? 'Invalid answer.' }, { status: 400 })
         }
-        storedAnswer = body.answer
-        correct = body.answer === parsedSnapshot.answer ? 1 : 0
+        storedAnswer = graded.storedAnswer
+        correct = graded.correct
         grading = 'deterministic'
       } else {
         storedAnswer = body.answer.trim()
@@ -345,8 +433,8 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
           return Response.json({ error: 'expectedVersion must be a non-negative integer.' }, { status: 400 })
         }
         const snapshot = JSON.parse(existing.exerciseSnapshot) as ExerciseSnapshot
-        if (snapshot.type === 'multiple_choice') {
-          return Response.json({ error: 'Multiple-choice results are deterministic and do not need advisory feedback.' }, { status: 409 })
+        if (isDeterministicExerciseType(snapshot.type)) {
+          return Response.json({ error: 'Deterministic exercise results do not need advisory feedback.' }, { status: 409 })
         }
         if (expectedVersion !== undefined && expectedVersion !== existing.version) {
           return Response.json(

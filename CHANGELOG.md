@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0
+
+- **Spaced recall, weak-spot queue & expanded exercise primitives (`/v1/review`, `<NoriReviewQueue />`).** Added `GET /api/nori/v1/review` (FSRS/SM-2-style streak & interval scheduling over `practice_attempts`), `<NoriReviewQueue />` React island with inline recall retries, and deterministic grading for `multiple_select` and `cloze` exercises alongside `multiple_choice`.
+- **In-browser code verification (`verifyCodeInBrowser`).** Added client-side syntax/delimiter checking, reference-call & forbidden-token assertion checks, and sandboxed Web Worker execution for `[code]` exercises in `<NoriPractice />`.
+- **Vault write-back recall digest (`/v1/digest`, `bun run digest`).** Added `GET /api/nori/v1/digest` and `src/cli/digest.ts` CLI to export Obsidian/Apricot-ready Markdown recall digests from the sidecar API or directly from SQLite.
+- **Modular SDK components & Miku workbench theme.** Modularized `src/sdk/components/` (`NoriPractice`, `NoriAssessment`, `NoriTutor`, `NoriReviewQueue`, `markdown`, `icons`) and added `resolveNoriIslandProps` for Archify-style vault path inference.
+
 ## 0.0.1
 
 Initial MVP release of Nori as a pure embeddable practice SDK and headless SQLite/LLM sidecar for personal static learning sites.

@@ -1,6 +1,6 @@
 {
   "name": "nori",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Embeddable practice SDK and headless SQLite/LLM sidecar for personal static learning sites",
   "license": "Apache-2.0",
   "repository": {
@@ -52,6 +52,7 @@
     "dev": "bun --watch src/sidecar-server.ts",
     "start": "bun run src/sidecar-server.ts",
     "sidecar": "bun run src/sidecar-server.ts",
+    "digest": "bun run src/cli/digest.ts",
     "build": "bun run build:sdk",
     "build:sdk": "rm -rf dist/sdk && tsc -p tsconfig.sdk.json",
     "db:generate": "drizzle-kit generate",
