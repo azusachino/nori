@@ -1,8 +1,12 @@
 import type { Database } from 'bun:sqlite'
+import { and, asc, eq, sql } from 'drizzle-orm'
+import { drizzle } from 'drizzle-orm/bun-sqlite'
 import { createHash } from 'node:crypto'
 import { complete, ModelError } from './ai'
 import { setting } from './config'
 import { readJson } from './input'
+import { practiceAttempts, sidecarSchema } from './schema'
+import { handleSidecarActivities } from './sidecar-activities'
 
 export const SIDECAR_API_VERSION = 1
 
@@ -34,23 +38,7 @@ export type PracticeAttempt = {
   updatedAt: number
 }
 
-type PracticeAttemptRow = {
-  id: string
-  course_key: string
-  lesson_key: string
-  exercise_key: string
-  content_hash: string
-  exercise_snapshot: string
-  answer: string
-  correct: number | null
-  grading: 'deterministic' | 'unscored'
-  feedback: string
-  advisory: number
-  owner_note: string
-  version: number
-  created_at: number
-  updated_at: number
-}
+type PracticeAttemptRow = typeof practiceAttempts.$inferSelect
 
 export type SidecarOptions = {
   basePath?: string
@@ -104,7 +92,12 @@ export function parseExerciseSnapshot(raw: unknown): ExerciseSnapshot | { error:
   }
   let options: string[] = []
   if (type === 'multiple_choice') {
-    if (!Array.isArray(obj.options) || obj.options.length < 2 || obj.options.length > 20 || !obj.options.every((item) => typeof item === 'string' && item.length > 0 && item.length <= 2000)) {
+    if (
+      !Array.isArray(obj.options) ||
+      obj.options.length < 2 ||
+      obj.options.length > 20 ||
+      !obj.options.every((item) => typeof item === 'string' && item.length > 0 && item.length <= 2000)
+    ) {
       return { error: 'Multiple-choice exercises require 2 to 20 non-empty string options.' }
     }
     options = [...obj.options]
@@ -153,20 +146,20 @@ function stripBasePath(pathname: string, basePath: string): string | null {
 function toPracticeAttempt(row: PracticeAttemptRow): PracticeAttempt {
   return {
     id: row.id,
-    courseKey: row.course_key,
-    lessonKey: row.lesson_key,
-    exerciseKey: row.exercise_key,
-    contentHash: row.content_hash,
-    exerciseSnapshot: JSON.parse(row.exercise_snapshot) as ExerciseSnapshot,
+    courseKey: row.courseKey,
+    lessonKey: row.lessonKey,
+    exerciseKey: row.exerciseKey,
+    contentHash: row.contentHash,
+    exerciseSnapshot: JSON.parse(row.exerciseSnapshot) as ExerciseSnapshot,
     answer: row.answer,
     correct: row.correct,
     grading: row.grading,
     feedback: row.feedback,
     advisory: Boolean(row.advisory),
-    ownerNote: row.owner_note,
+    ownerNote: row.ownerNote,
     version: row.version,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   }
 }
 
@@ -199,6 +192,7 @@ export function practiceAdvisoryPrompt(snapshot: ExerciseSnapshot, learnerAnswer
 }
 
 export function createSidecarApi(database: Database, options: SidecarOptions = {}) {
+  const orm = drizzle(database, { schema: sidecarSchema })
   const basePath = normalizeBasePath(options.basePath ?? setting('BASE_PATH') ?? '/api/nori')
   const now = options.now ?? Date.now
   const completeFn = options.completeFn ?? complete
@@ -232,19 +226,16 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
         return Response.json({ error: 'Provide a valid exerciseKey.' }, { status: 400 })
       }
 
-      const conditions = ['course_key = ?']
-      const params: string[] = [courseKey]
-      if (hasLesson && typeof lessonKey === 'string') {
-        conditions.push('lesson_key = ?')
-        params.push(lessonKey)
-      }
-      if (hasExercise && typeof exerciseKey === 'string') {
-        conditions.push('exercise_key = ?')
-        params.push(exerciseKey)
-      }
-      const rows = database
-        .query(`SELECT * FROM practice_attempts WHERE ${conditions.join(' AND ')} ORDER BY created_at ASC, rowid ASC`)
-        .all(...params) as PracticeAttemptRow[]
+      const filters = [eq(practiceAttempts.courseKey, courseKey)]
+      if (hasLesson && typeof lessonKey === 'string') filters.push(eq(practiceAttempts.lessonKey, lessonKey))
+      if (hasExercise && typeof exerciseKey === 'string') filters.push(eq(practiceAttempts.exerciseKey, exerciseKey))
+
+      const rows = orm
+        .select()
+        .from(practiceAttempts)
+        .where(and(...filters))
+        .orderBy(asc(practiceAttempts.createdAt))
+        .all()
       return Response.json(
         {
           courseKey,
@@ -307,13 +298,27 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
 
       const id = crypto.randomUUID()
       const ts = now()
-      database.run(
-        `INSERT INTO practice_attempts
-          (id, course_key, lesson_key, exercise_key, content_hash, exercise_snapshot, answer, correct, grading, feedback, advisory, owner_note, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, '', 0, ?, ?)`,
-        [id, courseKey, lessonKey, exerciseKey, computedHash, JSON.stringify(parsedSnapshot), storedAnswer, correct, grading, ts, ts],
-      )
-      const row = database.query('SELECT * FROM practice_attempts WHERE id = ?').get(id) as PracticeAttemptRow
+      orm
+        .insert(practiceAttempts)
+        .values({
+          id,
+          courseKey,
+          lessonKey,
+          exerciseKey,
+          contentHash: computedHash,
+          exerciseSnapshot: JSON.stringify(parsedSnapshot),
+          answer: storedAnswer,
+          correct,
+          grading,
+          feedback: '',
+          advisory: 0,
+          ownerNote: '',
+          version: 0,
+          createdAt: ts,
+          updatedAt: ts,
+        })
+        .run()
+      const row = orm.select().from(practiceAttempts).where(eq(practiceAttempts.id, id)).get()!
       return Response.json({ attempt: toPracticeAttempt(row) }, { status: 201 })
     }
 
@@ -323,7 +328,7 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
       if (!UUID_RE.test(attemptId)) {
         return Response.json({ error: 'Attempt not found.' }, { status: 404 })
       }
-      const existing = database.query('SELECT * FROM practice_attempts WHERE id = ?').get(attemptId) as PracticeAttemptRow | null
+      const existing = orm.select().from(practiceAttempts).where(eq(practiceAttempts.id, attemptId)).get()
       if (!existing) {
         return Response.json({ error: 'Attempt not found.' }, { status: 404 })
       }
@@ -339,7 +344,7 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
         if (expectedVersion === null) {
           return Response.json({ error: 'expectedVersion must be a non-negative integer.' }, { status: 400 })
         }
-        const snapshot = JSON.parse(existing.exercise_snapshot) as ExerciseSnapshot
+        const snapshot = JSON.parse(existing.exerciseSnapshot) as ExerciseSnapshot
         if (snapshot.type === 'multiple_choice') {
           return Response.json({ error: 'Multiple-choice results are deterministic and do not need advisory feedback.' }, { status: 409 })
         }
@@ -359,20 +364,20 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
             { status: 502 },
           )
         }
-        const updated = database.transaction(() => {
-          const current = database.query('SELECT * FROM practice_attempts WHERE id = ?').get(attemptId) as PracticeAttemptRow | null
+        const updated = orm.transaction((tx) => {
+          const current = tx.select().from(practiceAttempts).where(eq(practiceAttempts.id, attemptId)).get()
           if (!current) return { status: 404 as const }
           if (current.version !== observedVersion || (expectedVersion !== undefined && current.version !== expectedVersion)) {
             return { status: 409 as const, row: current }
           }
           const ts = now()
-          database.run(
-            'UPDATE practice_attempts SET feedback = ?, advisory = 1, version = version + 1, updated_at = ? WHERE id = ? AND version = ?',
-            [feedbackText, ts, attemptId, observedVersion],
-          )
-          const next = database.query('SELECT * FROM practice_attempts WHERE id = ?').get(attemptId) as PracticeAttemptRow
+          tx.update(practiceAttempts)
+            .set({ feedback: feedbackText, advisory: 1, version: sql`${practiceAttempts.version} + 1`, updatedAt: ts })
+            .where(and(eq(practiceAttempts.id, attemptId), eq(practiceAttempts.version, observedVersion)))
+            .run()
+          const next = tx.select().from(practiceAttempts).where(eq(practiceAttempts.id, attemptId)).get()!
           return { status: 200 as const, row: next }
-        })()
+        })
         if (updated.status === 404) return Response.json({ error: 'Attempt not found.' }, { status: 404 })
         if (updated.status === 409) {
           return Response.json(
@@ -396,20 +401,20 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
           return Response.json({ error: 'expectedVersion must be a non-negative integer.' }, { status: 400 })
         }
         const note = body.ownerNote.trim()
-        const result = database.transaction(() => {
-          const current = database.query('SELECT * FROM practice_attempts WHERE id = ?').get(attemptId) as PracticeAttemptRow | null
+        const result = orm.transaction((tx) => {
+          const current = tx.select().from(practiceAttempts).where(eq(practiceAttempts.id, attemptId)).get()
           if (!current) return { status: 404 as const }
           if (expectedVersion !== undefined && current.version !== expectedVersion) {
             return { status: 409 as const, row: current }
           }
           const ts = now()
-          database.run(
-            'UPDATE practice_attempts SET owner_note = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?',
-            [note, ts, attemptId, current.version],
-          )
-          const next = database.query('SELECT * FROM practice_attempts WHERE id = ?').get(attemptId) as PracticeAttemptRow
+          tx.update(practiceAttempts)
+            .set({ ownerNote: note, version: sql`${practiceAttempts.version} + 1`, updatedAt: ts })
+            .where(and(eq(practiceAttempts.id, attemptId), eq(practiceAttempts.version, current.version)))
+            .run()
+          const next = tx.select().from(practiceAttempts).where(eq(practiceAttempts.id, attemptId)).get()!
           return { status: 200 as const, row: next }
-        })()
+        })
         if (result.status === 404) return Response.json({ error: 'Attempt not found.' }, { status: 404 })
         if (result.status === 409) {
           return Response.json(
@@ -420,6 +425,9 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
         return Response.json({ attempt: toPracticeAttempt(result.row) })
       }
     }
+
+    const activityResponse = await handleSidecarActivities(orm, subPath, url, request, now, completeFn)
+    if (activityResponse) return activityResponse
 
     return Response.json({ error: 'Not found' }, { status: 404 })
   }

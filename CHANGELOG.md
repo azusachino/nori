@@ -1,11 +1,10 @@
 # Changelog
 
-## Unreleased
-
 ## 0.0.1
 
-Initial MVP release of Nori as an embeddable practice SDK and headless local/tailnet sidecar for static learning sites.
+Initial MVP release of Nori as a pure embeddable practice SDK and headless SQLite/LLM sidecar for personal static learning sites.
 
-- **Headless sidecar v1 practice API.** `make sidecar` (`bun run src/sidecar-server.ts`) serves `/api/nori/v1/health` and external-keyed `/api/nori/v1/practice/*` routes backed by `bun:sqlite` (`practice_attempts` table). Supports deterministic multiple-choice grading, immediate written/code attempt persistence decoupled from LLM availability, advisory AI feedback (`advisory: true`, untrusted-data prompt framing, calls outside SQLite transactions), owner corrections with optimistic concurrency (`version` / `409`), and configurable `NORI_BASE_PATH` for reverse proxies. See [docs/sidecar-api.md](docs/sidecar-api.md). ([#7](https://github.com/azusachino/nori/pull/7))
-- **Embeddable single-package SDK.** Exports `.` (`NoriClient`, `computeContentHash`, `checkMultipleChoice`, `localStorage` draft helpers, client-side `formatAttemptsAsMarkdown`), `./react` (`<NoriPractice />` island with offline local-draft mode, manual submit-to-Nori reconciliation, and content-drift detection), and `./styles.css` (scoped `.nori-*` styles mapped to semantic theme tokens). Declares `react` and `react-dom` as `peerDependencies`. ([#7](https://github.com/azusachino/nori/pull/7))
-- **Core SQLite & learning foundations.** Preserves the WAL online backup workflow (`VACUUM INTO`), non-executing code handling, and existing multi-module, timed/untimed assessment, and contextual tutor backends on `main`.
+- **Headless sidecar v1 API (`/api/nori/v1`).** `make sidecar` (`bun run src/sidecar-server.ts`) serves `/v1/health`, `/v1/practice/*`, `/v1/assessments/*` (server-clock timed/untimed assessments with expiry across restarts), and `/v1/tutor` (scoped attempt context, 256 KB body limit, 120,000-char context budget, untrusted-data framing, and deduplicated lesson text storage). See [docs/sidecar-api.md](docs/sidecar-api.md). ([#7](https://github.com/azusachino/nori/pull/7), [#8](https://github.com/azusachino/nori/pull/8))
+- **Drizzle ORM & SQL migrations.** Schema lives in `src/lib/server/schema.ts` with generated SQL migrations in `drizzle/0000_sidecar_init.sql`, applied automatically on startup over `bun:sqlite` in WAL mode (`VACUUM INTO` online backup). ([#8](https://github.com/azusachino/nori/pull/8))
+- **Single-package SDK (`.`, `./react`, `./styles.css`).** Exports `NoriClient`, `computeContentHash`, `checkMultipleChoice`, `localStorage` draft helpers, client-side `formatAttemptsAsMarkdown`, and `<NoriPractice />`, `<NoriAssessment />`, and `<NoriTutor />` React islands with scoped theme-token CSS. Declares `react` and `react-dom` as `peerDependencies` and `drizzle-orm` as the sole runtime dependency. ([#7](https://github.com/azusachino/nori/pull/7), [#8](https://github.com/azusachino/nori/pull/8))
+- **Container image.** Added multi-stage `Containerfile` (`oven/bun:1-alpine` build + minimal runtime stage with `tini` as PID 1 and non-root `bun` user, leaving probes and PVC mounts to Kubernetes) and `.dockerignore`. ([#8](https://github.com/azusachino/nori/pull/8))

@@ -58,15 +58,108 @@ export type LocalDraft = {
   correct?: number | null
 }
 
+export type AssessmentItemDetail = {
+  id: string
+  position: number
+  lessonKey: string
+  exerciseKey: string
+  contentHash: string
+  type: SidecarExerciseType
+  prompt: string
+  options: string[]
+  answer: string | null
+  referenceAnswer?: string
+  explanation?: string
+  result: {
+    grading: 'deterministic' | 'unscored'
+    correct: number | null
+    feedback: string
+    advisory: boolean
+    ownerNote: string
+  } | null
+}
+
+export type AssessmentDetail = {
+  id: string
+  courseKey: string
+  title: string
+  mode: 'timed' | 'untimed'
+  durationSeconds: number | null
+  status: 'planned' | 'active' | 'submitted' | 'expired'
+  createdAt: number
+  startedAt: number | null
+  deadlineAt: number | null
+  submittedAt: number | null
+  finalizedAt: number | null
+  version: number
+  serverNow: number
+  remainingMs: number | null
+  summary: {
+    totalItems: number
+    answeredCount: number
+    deterministicTotal: number
+    deterministicCorrect: number
+    deterministicIncorrect: number
+    unscoredCount: number
+  }
+  items: AssessmentItemDetail[]
+}
+
+export type CreateAssessmentInput = {
+  courseKey: string
+  title: string
+  mode: 'timed' | 'untimed'
+  durationSeconds?: number
+  items: { lessonKey?: string; exerciseKey: string; exerciseSnapshot: ExerciseSnapshot }[]
+}
+
+export type TutorContextMeta = {
+  lessonTitle: string
+  lessonHash: string
+  attemptIds: string[]
+  contextLimit: number
+  contextChars: number
+  historyTurnsIncluded: number
+  historyTurnsDropped: number
+}
+
+export type TutorTurn = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  lessonHash: string
+  contextMeta: TutorContextMeta
+  createdAt: number
+}
+
+export type TutorSession = {
+  courseKey: string
+  lessonKey: string
+  contextLimit: number
+  revision: number
+  turns: TutorTurn[]
+}
+
+export type SendTutorInput = {
+  courseKey: string
+  lessonKey: string
+  lessonTitle: string
+  lessonText: string
+  attemptIds?: string[]
+  message: string
+}
+
 export class NoriApiError extends Error {
   status: number
   attempt?: PracticeAttempt
+  assessment?: AssessmentDetail
 
-  constructor(message: string, status: number, attempt?: PracticeAttempt) {
+  constructor(message: string, status: number, attempt?: PracticeAttempt, assessment?: AssessmentDetail) {
     super(message)
     this.name = 'NoriApiError'
     this.status = status
     this.attempt = attempt
+    this.assessment = assessment
   }
 }
 
@@ -91,7 +184,12 @@ export class NoriClient {
     const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
     if (!response.ok) {
       const message = typeof data.error === 'string' ? data.error : `Request failed (${response.status})`
-      throw new NoriApiError(message, response.status, data.attempt as PracticeAttempt | undefined)
+      throw new NoriApiError(
+        message,
+        response.status,
+        data.attempt as PracticeAttempt | undefined,
+        data.assessment as AssessmentDetail | undefined,
+      )
     }
     return data as T
   }
@@ -140,6 +238,110 @@ export class NoriClient {
       signal,
     })
     return data.attempt
+  }
+
+  async listAssessments(courseKey: string, signal?: AbortSignal): Promise<{ courseKey: string; assessments: AssessmentDetail[] }> {
+    const query = new URLSearchParams({ courseKey })
+    return this.request(`/assessments?${query.toString()}`, { method: 'GET', signal })
+  }
+
+  async createAssessment(input: CreateAssessmentInput, signal?: AbortSignal): Promise<AssessmentDetail> {
+    const data = await this.request<{ assessment: AssessmentDetail }>('/assessments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+      signal,
+    })
+    return data.assessment
+  }
+
+  async getAssessment(assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetail> {
+    const data = await this.request<{ assessment: AssessmentDetail }>(`/assessments/${encodeURIComponent(assessmentId)}`, {
+      method: 'GET',
+      signal,
+    })
+    return data.assessment
+  }
+
+  async startAssessment(assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetail> {
+    const data = await this.request<{ assessment: AssessmentDetail }>(`/assessments/${encodeURIComponent(assessmentId)}/start`, {
+      method: 'POST',
+      signal,
+    })
+    return data.assessment
+  }
+
+  async saveAssessmentAnswer(
+    assessmentId: string,
+    itemId: string,
+    answer: string,
+    expectedVersion?: number,
+    signal?: AbortSignal,
+  ): Promise<AssessmentDetail> {
+    const body = expectedVersion === undefined ? { itemId, answer } : { itemId, answer, expectedVersion }
+    const data = await this.request<{ assessment: AssessmentDetail }>(`/assessments/${encodeURIComponent(assessmentId)}/answers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    return data.assessment
+  }
+
+  async submitAssessment(assessmentId: string, expectedVersion?: number, signal?: AbortSignal): Promise<AssessmentDetail> {
+    const body = expectedVersion === undefined ? {} : { expectedVersion }
+    const data = await this.request<{ assessment: AssessmentDetail }>(`/assessments/${encodeURIComponent(assessmentId)}/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    return data.assessment
+  }
+
+  async requestAssessmentFeedback(assessmentId: string, itemId: string, expectedVersion?: number, signal?: AbortSignal): Promise<AssessmentDetail> {
+    const body = expectedVersion === undefined ? { itemId } : { itemId, expectedVersion }
+    const data = await this.request<{ assessment: AssessmentDetail }>(`/assessments/${encodeURIComponent(assessmentId)}/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    return data.assessment
+  }
+
+  async saveAssessmentCorrection(
+    assessmentId: string,
+    itemId: string,
+    ownerNote: string,
+    expectedVersion?: number,
+    signal?: AbortSignal,
+  ): Promise<AssessmentDetail> {
+    const body = expectedVersion === undefined ? { itemId, ownerNote } : { itemId, ownerNote, expectedVersion }
+    const data = await this.request<{ assessment: AssessmentDetail }>(`/assessments/${encodeURIComponent(assessmentId)}/correct`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    return data.assessment
+  }
+
+  async getTutor(courseKey: string, lessonKey: string, signal?: AbortSignal): Promise<TutorSession> {
+    const query = new URLSearchParams({ courseKey, lessonKey })
+    return this.request(`/tutor?${query.toString()}`, { method: 'GET', signal })
+  }
+
+  async sendTutorMessage(
+    input: SendTutorInput,
+    signal?: AbortSignal,
+  ): Promise<{ courseKey: string; lessonKey: string; revision: number; context: TutorContextMeta; turns: TutorTurn[] }> {
+    return this.request('/tutor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+      signal,
+    })
   }
 }
 

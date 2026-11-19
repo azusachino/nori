@@ -17,6 +17,7 @@
     "sdk",
     "sidecar",
     "sqlite",
+    "drizzle",
     "react",
     "bun"
   ],
@@ -47,49 +48,30 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
-  "imports": {
-    "#/*": "./src/*"
-  },
   "scripts": {
-    "dev": "umask 077 && bun --bun vite dev --port 3000",
-    "build": "bun --bun vite build",
+    "dev": "bun --watch src/sidecar-server.ts",
+    "start": "bun run src/sidecar-server.ts",
+    "sidecar": "bun run src/sidecar-server.ts",
+    "build": "bun run build:sdk",
     "build:sdk": "rm -rf dist/sdk && tsc -p tsconfig.sdk.json",
-    "start": "umask 077 && NITRO_HOST=127.0.0.1 HOST=127.0.0.1 bun .output/server/index.mjs",
-    "sidecar": "umask 077 && bun run src/sidecar-server.ts",
-    "typecheck": "tsc --noEmit"
+    "db:generate": "drizzle-kit generate",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
   },
   "peerDependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "dependencies": {
-    "@tanstack/react-router": "1.170.46",
-    "@tanstack/react-start": "1.169.5",
-    "class-variance-authority": "0.7.1",
-    "clsx": "2.1.1",
-    "nitro": "3.0.260610-beta",
-    "radix-ui": "1.8.1",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "tailwind-merge": "3.7.0",
-    "unpdf": "2.1.0"
+    "drizzle-orm": "0.45.4"
   },
   "devDependencies": {
-    "@playwright/test": "1.60.0",
-    "@tailwindcss/vite": "4.3.5",
     "@types/bun": "1.4.4",
-    "@types/node": "^22.10.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "@vitejs/plugin-react": "^6.0.1",
-    "tailwindcss": "4.3.5",
-    "typescript": "^6.0.2",
-    "vite": "^8.0.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "lightningcss"
-    ]
+    "drizzle-kit": "0.31.11",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^6.0.2"
   }
 }

@@ -1,0 +1,10 @@
+node_modules
+dist
+.output
+.data
+.tmp
+.git
+.github
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
