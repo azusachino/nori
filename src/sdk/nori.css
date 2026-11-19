@@ -1,4 +1,4 @@
-/* Scoped styles for Nori SDK islands; binds to Apricot semantic theme tokens. */
+/* Scoped styles for Nori SDK islands; binds to Apricot semantic & Miku theme tokens. */
 .nori-practice {
   --nori-bg: var(--bg, #f4f7f9);
   --nori-surface: var(--surface, #ffffff);
@@ -6,16 +6,54 @@
   --nori-muted: var(--muted, #5d6871);
   --nori-line: var(--line, #d5dde3);
   --nori-primary: var(--primary, #107076);
+  --nori-glow: var(--glow, #39c5bb);
+  --nori-accent: var(--miku-pink, #d6457f);
+  --nori-tip: var(--tone-tip, #16a34a);
+  --nori-danger: var(--tone-danger, #dc2626);
+  --nori-warn: var(--tone-warning, #d97706);
   --nori-font-mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  --nori-radius-frame: var(--radius-frame, 16px);
 
-  background: var(--nori-surface);
+  background: color-mix(in srgb, var(--nori-primary) 3%, var(--nori-surface));
   color: var(--nori-ink);
-  border: 1px solid var(--nori-line);
-  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--nori-primary) 22%, var(--nori-line));
+  border-radius: var(--nori-radius-frame);
   padding: 1.25rem;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 1rem;
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--nori-ink) 4%, transparent);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+/* Prevent Apricot .prose paragraph & list margins from bloating inner island elements */
+.nori-practice p {
+  margin: 0;
+}
+
+.nori-practice p + p {
+  margin-top: 0.5rem;
+}
+
+.nori-practice :not(pre) > code {
+  display: inline;
+  font-family: var(--nori-font-mono);
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--nori-primary);
+  background: color-mix(in srgb, var(--nori-primary) 8%, var(--nori-surface));
+  border: 1px solid color-mix(in srgb, var(--nori-primary) 22%, var(--nori-line));
+  border-radius: 5px;
+  padding: 0.1rem 0.38rem;
+  margin: 0 0.08rem;
+  white-space: break-spaces;
+}
+
+.nori-icon {
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: -0.15em;
 }
 
 .nori-practice__header {
@@ -24,68 +62,134 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  border-bottom: 1px solid var(--nori-line);
-  padding-bottom: 0.75rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--nori-primary) 14%, var(--nori-line));
+  padding-bottom: 0.85rem;
+}
+
+.nori-practice__title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.nori-header-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--nori-primary);
+  background: color-mix(in srgb, var(--nori-primary) 14%, var(--nori-surface));
+  border: 1px solid color-mix(in srgb, var(--nori-primary) 25%, transparent);
+  flex-shrink: 0;
 }
 
 .nori-practice__title {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  margin: 0 !important;
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--nori-ink);
 }
 
 .nori-practice__meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
+}
+
+.nori-index-badge {
+  font-family: var(--nori-font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  padding: 0.24rem 0.45rem;
+  border-radius: 5px;
+  color: var(--nori-primary);
+  border: 1px solid color-mix(in srgb, var(--nori-primary) 32%, transparent);
+  background: color-mix(in srgb, var(--nori-primary) 10%, var(--nori-surface));
+  user-select: none;
 }
 
 .nori-badge {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.75rem;
+  gap: 0.32rem;
+  font-size: 0.73rem;
+  font-weight: 500;
   line-height: 1.2;
-  padding: 0.2rem 0.55rem;
+  padding: 0.22rem 0.58rem;
   border-radius: 999px;
   border: 1px solid var(--nori-line);
-  background: var(--nori-bg);
+  background: var(--nori-surface);
   color: var(--nori-muted);
+  white-space: nowrap;
 }
 
 .nori-badge--online {
-  border-color: var(--nori-primary);
+  border-color: color-mix(in srgb, var(--nori-primary) 45%, var(--nori-line));
+  background: color-mix(in srgb, var(--nori-primary) 8%, var(--nori-surface));
   color: var(--nori-primary);
 }
 
 .nori-badge--warn {
   border-style: dashed;
+  border-color: color-mix(in srgb, var(--nori-warn) 55%, var(--nori-line));
+  color: var(--nori-warn);
+}
+
+.nori-badge--correct {
+  border-color: color-mix(in srgb, var(--nori-tip) 55%, var(--nori-line));
+  background: color-mix(in srgb, var(--nori-tip) 13%, var(--nori-surface));
+  color: var(--nori-tip);
+  font-weight: 600;
+}
+
+.nori-badge--incorrect {
+  border-color: color-mix(in srgb, var(--nori-danger) 55%, var(--nori-line));
+  background: color-mix(in srgb, var(--nori-danger) 13%, var(--nori-surface));
+  color: var(--nori-danger);
+  font-weight: 600;
 }
 
 .nori-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.35rem;
-  min-height: 36px;
-  padding: 0.4rem 0.85rem;
+  gap: 0.38rem;
+  min-height: 34px;
+  padding: 0.35rem 0.78rem;
   border-radius: 8px;
   border: 1px solid var(--nori-line);
-  background: var(--nori-bg);
+  background: var(--nori-surface);
   color: var(--nori-ink);
   font: inherit;
-  font-size: 0.875rem;
+  font-size: 0.82rem;
+  font-weight: 500;
   cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .nori-btn:hover:not(:disabled) {
   border-color: var(--nori-primary);
+  color: var(--nori-primary);
+  background: color-mix(in srgb, var(--nori-primary) 6%, var(--nori-surface));
+}
+
+.nori-btn--sm {
+  min-height: 30px;
+  padding: 0.25rem 0.65rem;
+  font-size: 0.78rem;
 }
 
 .nori-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
@@ -93,16 +197,38 @@
   background: var(--nori-primary);
   border-color: var(--nori-primary);
   color: #ffffff;
+  font-weight: 600;
+}
+
+:root[data-theme="dark"] .nori-btn--primary {
+  color: #11181c;
+}
+
+.nori-btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--nori-primary) 88%, #000000);
+  border-color: var(--nori-primary);
+  color: #ffffff;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--nori-primary) 30%, transparent);
+}
+
+:root[data-theme="dark"] .nori-btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--nori-primary) 90%, #ffffff);
+  color: #11181c;
 }
 
 .nori-card {
   border: 1px solid var(--nori-line);
-  border-radius: 10px;
-  padding: 1rem;
-  background: var(--nori-bg);
+  border-radius: 12px;
+  padding: 1.05rem 1.15rem;
+  background: var(--nori-surface);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  transition: border-color 0.15s ease;
+}
+
+.nori-card:hover {
+  border-color: color-mix(in srgb, var(--nori-primary) 30%, var(--nori-line));
 }
 
 .nori-card__top {
@@ -115,8 +241,10 @@
 
 .nori-card__prompt {
   margin: 0;
-  font-weight: 500;
-  white-space: pre-wrap;
+  font-weight: 550;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--nori-ink);
 }
 
 .nori-options {
@@ -127,34 +255,159 @@
 
 .nori-option {
   display: flex;
-  align-items: flex-start;
-  gap: 0.55rem;
-  padding: 0.55rem 0.75rem;
-  border-radius: 8px;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.8rem;
+  border-radius: 9px;
   border: 1px solid var(--nori-line);
-  background: var(--nori-surface);
+  background: color-mix(in srgb, var(--nori-bg) 45%, var(--nori-surface));
   cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.nori-option input[type="radio"] {
-  margin-top: 0.2rem;
+.nori-option:hover {
+  border-color: color-mix(in srgb, var(--nori-primary) 45%, var(--nori-line));
+  background: color-mix(in srgb, var(--nori-primary) 4%, var(--nori-surface));
+}
+
+.nori-option--selected {
+  border-color: var(--nori-primary);
+  background: color-mix(in srgb, var(--nori-primary) 7%, var(--nori-surface));
+}
+
+.nori-option__key {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-family: var(--nori-font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--nori-muted);
+  background: var(--nori-surface);
+  border: 1px solid var(--nori-line);
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.nori-option--selected .nori-option__key {
+  background: var(--nori-primary);
+  border-color: var(--nori-primary);
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .nori-option--selected .nori-option__key {
+  color: #11181c;
+}
+
+.nori-option--correct {
+  border-color: color-mix(in srgb, var(--nori-tip) 65%, var(--nori-line));
+  background: color-mix(in srgb, var(--nori-tip) 10%, var(--nori-surface));
+}
+
+.nori-option--correct .nori-option__key {
+  background: var(--nori-tip);
+  border-color: var(--nori-tip);
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .nori-option--correct .nori-option__key {
+  color: #11181c;
+}
+
+.nori-option--incorrect {
+  border-color: color-mix(in srgb, var(--nori-danger) 65%, var(--nori-line));
+  background: color-mix(in srgb, var(--nori-danger) 10%, var(--nori-surface));
+}
+
+.nori-option--incorrect .nori-option__key {
+  background: var(--nori-danger);
+  border-color: var(--nori-danger);
+  color: #ffffff;
+}
+
+.nori-option__body {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+}
+
+.nori-option__status {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.nori-option__status--correct {
+  color: var(--nori-tip);
+}
+
+.nori-option__status--incorrect {
+  color: var(--nori-danger);
+}
+
+.nori-option input[type="radio"],
+.nori-option input[type="checkbox"] {
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--nori-primary);
+}
+
+.nori-option--has-key input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
 }
 
 .nori-textarea {
   width: 100%;
-  min-height: 96px;
-  padding: 0.65rem 0.75rem;
-  border-radius: 8px;
+  min-height: 88px;
+  padding: 0.65rem 0.8rem;
+  border-radius: 9px;
   border: 1px solid var(--nori-line);
-  background: var(--nori-surface);
+  background: color-mix(in srgb, var(--nori-bg) 50%, var(--nori-surface));
   color: var(--nori-ink);
   font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.55;
   resize: vertical;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.nori-textarea:focus {
+  outline: none;
+  background: var(--nori-surface);
+  border-color: var(--nori-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--nori-glow) 22%, transparent);
 }
 
 .nori-textarea--code {
   font-family: var(--nori-font-mono);
-  font-size: 0.875rem;
+  font-size: 0.84rem;
+}
+
+.nori-input-inline {
+  min-height: 32px;
+  height: 32px;
+  padding: 0.25rem 0.65rem;
+  border-radius: 7px;
+  border: 1px solid var(--nori-line);
+  background: var(--nori-surface);
+  color: var(--nori-ink);
+  font: inherit;
+  font-size: 0.82rem;
+  flex: 1 1 180px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.nori-input-inline:focus {
+  outline: none;
+  border-color: var(--nori-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nori-glow) 20%, transparent);
 }
 
 .nori-actions {
@@ -166,65 +419,186 @@
 
 .nori-error {
   margin: 0;
-  font-size: 0.875rem;
-  color: #b42318;
+  font-size: 0.84rem;
+  color: var(--nori-danger);
 }
 
 .nori-muted {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
   color: var(--nori-muted);
 }
 
 .nori-history {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
-  border-top: 1px solid var(--nori-line);
-  padding-top: 0.75rem;
+  gap: 0.5rem;
+  border-top: 1px dashed var(--nori-line);
+  padding-top: 0.7rem;
+}
+
+.nori-history__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .nori-attempt {
   border: 1px solid var(--nori-line);
-  border-radius: 8px;
-  padding: 0.75rem;
-  background: var(--nori-surface);
+  border-radius: 9px;
+  padding: 0.6rem 0.8rem;
+  background: color-mix(in srgb, var(--nori-bg) 55%, var(--nori-surface));
   display: flex;
   flex-direction: column;
+  gap: 0.45rem;
+}
+
+.nori-attempt__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
 }
 
+.nori-attempt__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1;
+}
+
+/* CRITICAL: block flow so inline <code>, <strong>, <a>, and KaTeX stay on the same line */
 .nori-attempt__answer {
   margin: 0;
-  white-space: pre-wrap;
+  display: block;
+  min-width: 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.nori-attempt__answer--inline {
+  display: inline;
 }
 
 .nori-feedback {
+  border: 1px solid color-mix(in srgb, var(--nori-primary) 28%, var(--nori-line));
   border-left: 3px solid var(--nori-primary);
-  padding: 0.45rem 0.75rem;
-  background: var(--nori-bg);
-  font-size: 0.9rem;
-  white-space: pre-wrap;
+  padding: 0.65rem 0.85rem;
+  background: color-mix(in srgb, var(--nori-primary) 5%, var(--nori-surface));
+  font-size: 0.88rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border-radius: 6px 10px 10px 6px;
+}
+
+.nori-feedback__header {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--nori-primary);
 }
 
 .nori-details {
-  font-size: 0.9rem;
+  font-size: 0.88rem;
+  border: 1px solid color-mix(in srgb, var(--nori-primary) 22%, var(--nori-line));
+  background: color-mix(in srgb, var(--nori-primary) 4%, var(--nori-surface));
+  border-radius: 10px;
+  padding: 0.55rem 0.85rem;
 }
 
 .nori-details summary {
   cursor: pointer;
   color: var(--nori-primary);
-  font-weight: 500;
+  font-weight: 600;
+  font-size: 0.84rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  user-select: none;
+}
+
+.nori-details[open] summary {
+  margin-bottom: 0.5rem;
 }
 
 .nori-codeblock {
+  position: relative;
   margin: 0.4rem 0;
-  padding: 0.65rem 0.8rem;
+  padding: 0.65rem 0.85rem;
   border-radius: 8px;
   border: 1px solid var(--nori-line);
   background: var(--nori-surface);
   font-family: var(--nori-font-mono);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
+  line-height: 1.55;
   overflow-x: auto;
+  white-space: pre;
 }
 
+.nori-codeblock__lang {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--nori-muted);
+  margin-bottom: 0.3rem;
+  user-select: none;
+}
+
+.nori-md-heading {
+  font-weight: 650;
+  font-size: 0.92rem;
+  margin: 0.35rem 0 0.15rem;
+  color: var(--nori-ink);
+}
+
+.nori-md-heading:first-child {
+  margin-top: 0;
+}
+
+.nori-md-para {
+  display: block;
+  white-space: pre-wrap;
+  line-height: 1.6;
+  margin: 0.3rem 0;
+}
+
+.nori-md-para:first-child {
+  margin-top: 0;
+}
+
+.nori-md-para:last-child {
+  margin-bottom: 0;
+}
+
+.nori-md-list {
+  margin: 0.3rem 0;
+  padding-left: 1.25rem;
+}
+
+.nori-md-list li {
+  margin: 0.2rem 0;
+  line-height: 1.55;
+}
+
+.nori-md-quote {
+  margin: 0.35rem 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--nori-primary);
+  color: var(--nori-muted);
+  white-space: pre-wrap;
+}
+
+.nori-math {
+  font-family: var(--nori-font-mono);
+  font-size: 0.88em;
+}

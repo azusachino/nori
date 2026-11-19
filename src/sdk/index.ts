@@ -10,6 +10,10 @@ export type ExerciseSnapshot = {
 
 export type PracticeExercise = ExerciseSnapshot & {
   key: string
+  promptHtml?: string
+  optionHtmls?: string[]
+  answerHtml?: string
+  explanationHtml?: string
 }
 
 export type PracticeBank = {
@@ -465,3 +469,34 @@ export function formatAttemptsAsMarkdown(input: {
 
   return lines.join('\n').trimEnd() + '\n'
 }
+
+export function resolveNoriIslandProps(
+  componentName: string,
+  rawProps: Record<string, unknown>,
+  sourceRelPath = '',
+): Record<string, unknown> {
+  const props = { ...rawProps }
+  const normalizedPath = sourceRelPath.split('\\').join('/')
+  const lessonMatch = normalizedPath.match(/^courses\/([^/]+\/[^/]+)\/lessons\/([^/]+)\.md$/)
+  const courseMatch = normalizedPath.match(/^courses\/([^/]+\/[^/]+)\//)
+  const inferredCourse = lessonMatch?.[1] ?? courseMatch?.[1]
+  const inferredLesson = lessonMatch?.[2]
+
+  if (typeof props.courseKey !== 'string' && inferredCourse) props.courseKey = inferredCourse
+  if (typeof props.lessonKey !== 'string' && inferredLesson && componentName !== 'NoriAssessment') {
+    props.lessonKey = inferredLesson
+  }
+  const cKey = typeof props.courseKey === 'string' ? props.courseKey : undefined
+  const lKey = typeof props.lessonKey === 'string' ? props.lessonKey : undefined
+  if (componentName === 'NoriPractice' && typeof props.bank !== 'string' && cKey && lKey) {
+    props.bank = `/practice-banks/${cKey}/${lKey}.json`
+  }
+  if (componentName === 'NoriAssessment' && typeof props.bank !== 'string' && cKey) {
+    props.bank = `/practice-banks/${cKey}/${lKey || 'all'}.json`
+  }
+  if (componentName === 'NoriTutor' && typeof props.lessonAsset !== 'string' && cKey && lKey) {
+    props.lessonAsset = `/lesson-context/${cKey}/${lKey}.json`
+  }
+  return props
+}
+

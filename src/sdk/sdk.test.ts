@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { openDatabase } from '../lib/server/database'
 import { createSidecarApi, hashExerciseSnapshot } from '../lib/server/sidecar'
 import {
@@ -10,8 +12,10 @@ import {
   formatAttemptsAsMarkdown,
   NoriApiError,
   NoriClient,
+  resolveNoriIslandProps,
   type ExerciseSnapshot,
 } from './index'
+import { renderInlineMarkdown, renderRichText } from './react'
 
 const dirs: string[] = []
 
@@ -112,5 +116,56 @@ describe('Nori SDK client and helpers', () => {
     } finally {
       db.close()
     }
+  })
+
+  test('resolveNoriIslandProps infers courseKey, lessonKey, bank, and lessonAsset from vault path', () => {
+    const lessonPath = 'courses/ai/build-llm-from-scratch/lessons/01-understanding-large-language-models.md'
+    expect(resolveNoriIslandProps('NoriPractice', { title: 'Lesson 1 practice' }, lessonPath)).toEqual({
+      title: 'Lesson 1 practice',
+      courseKey: 'ai/build-llm-from-scratch',
+      lessonKey: '01-understanding-large-language-models',
+      bank: '/practice-banks/ai/build-llm-from-scratch/01-understanding-large-language-models.json',
+    })
+    expect(resolveNoriIslandProps('NoriTutor', {}, lessonPath)).toEqual({
+      courseKey: 'ai/build-llm-from-scratch',
+      lessonKey: '01-understanding-large-language-models',
+      lessonAsset: '/lesson-context/ai/build-llm-from-scratch/01-understanding-large-language-models.json',
+    })
+    expect(resolveNoriIslandProps('NoriAssessment', {}, 'courses/ai/build-llm-from-scratch/practice/index.md')).toEqual({
+      courseKey: 'ai/build-llm-from-scratch',
+      bank: '/practice-banks/ai/build-llm-from-scratch/all.json',
+    })
+  })
+
+  test('renderRichText and renderInlineMarkdown render fenced code blocks, inline triple backticks, nested code in bold, lists, and wikilinks', () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        'div',
+        null,
+        renderRichText(
+          [
+            '### Step 1: **Tensor shape in `calc`**',
+            '',
+            'Use ```emb = nn.Embedding(50257, 64)``` or a fenced block:',
+            '',
+            '```python',
+            'emb = torch.nn.Embedding(50257, 64)',
+            'h = emb(x)',
+            '```',
+            '',
+            '- First item with `float32` and [[note/columns/ai-llm-systems-in-practice|AI LLM systems]]',
+            '- Second item with $O(1)$ lookup',
+          ].join('\n'),
+        ),
+      ),
+    )
+    expect(html).toContain('<div class="nori-md-heading">Step 1: <strong>Tensor shape in <code>calc</code></strong></div>')
+    expect(html).toContain('<code>emb = nn.Embedding(50257, 64)</code>')
+    expect(html).toContain('<pre class="nori-codeblock" data-language="python"><span class="nori-codeblock__lang">python</span><code>emb = torch.nn.Embedding(50257, 64)\nh = emb(x)</code></pre>')
+    expect(html).toContain('<ul class="nori-md-list"><li>First item with <code>float32</code> and <a href="/note/columns/ai-llm-systems-in-practice">AI LLM systems</a></li>')
+    expect(html).toContain('<code class="nori-math">O(1)</code>')
+
+    const inlineHtml = renderToStaticMarkup(createElement('span', null, renderInlineMarkdown('`32,768` floats (`~128 KB` in `float32`)')))
+    expect(inlineHtml).toBe('<span><code>32,768</code> floats (<code>~128 KB</code> in <code>float32</code>)</span>')
   })
 })
