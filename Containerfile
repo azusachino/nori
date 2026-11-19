@@ -1,12 +1,15 @@
 # syntax=docker/dockerfile:1
 
-FROM oven/bun:1-alpine AS build
+FROM mirror.gcr.io/oven/bun:1.4.4-alpine AS build
 
 WORKDIR /build
 COPY package.json bun.lock ./
 RUN bun install --production --frozen-lockfile
 
-FROM oven/bun:1-alpine AS runtime
+FROM mirror.gcr.io/oven/bun:1.4.4-alpine AS runtime
+
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 
 RUN apk add --no-cache tini ca-certificates \
     && mkdir -p /data \
