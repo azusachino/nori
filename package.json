@@ -49,9 +49,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "dev": "umask 077 && bun --watch src/sidecar-server.ts",
-    "start": "umask 077 && bun run src/sidecar-server.ts",
-    "sidecar": "umask 077 && bun run src/sidecar-server.ts",
+    "dev": "bun --watch src/sidecar-server.ts",
+    "start": "bun run src/sidecar-server.ts",
+    "sidecar": "bun run src/sidecar-server.ts",
     "build": "bun run build:sdk",
     "build:sdk": "rm -rf dist/sdk && tsc -p tsconfig.sdk.json",
     "db:generate": "drizzle-kit generate",
