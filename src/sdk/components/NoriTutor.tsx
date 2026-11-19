@@ -15,7 +15,7 @@ import {
   IconWifiOff,
   IconXCircle,
 } from './icons'
-import { renderRichText } from './markdown'
+import { renderInlineMarkdown, renderRichText } from './markdown'
 
 export type NoriTutorProps = {
   courseKey: string
@@ -130,10 +130,12 @@ export function NoriTutor({
   return (
     <section className="nori-practice" aria-label={title}>
       <header className="nori-practice__header">
-        <h3 className="nori-practice__title">
-          <IconBot />
-          <span>{title}</span>
-        </h3>
+        <div className="nori-practice__title-group">
+          <span className="nori-header-icon">
+            <IconBot />
+          </span>
+          <h3 className="nori-practice__title">{title}</h3>
+        </div>
         <span className={`nori-badge ${online === 'online' ? 'nori-badge--online' : 'nori-badge--warn'}`} data-nori-status={online}>
           {online === 'online' ? <IconWifi /> : <IconWifiOff />}
           <span>
@@ -156,26 +158,38 @@ export function NoriTutor({
             <div className="nori-card">
               <p className="nori-muted">Include recorded attempts in tutor context ({selectedIds.length} selected):</p>
               <div className="nori-options">
-                {attempts.map((a) => (
-                  <label key={a.id} className="nori-option">
-                    <input type="checkbox" data-ui="nori" checked={selectedIds.includes(a.id)} onChange={() => toggleAttempt(a.id)} />
-                    <div className="nori-option__body">
-                      <div className="nori-practice__meta" style={{ marginBottom: '0.2rem' }}>
-                        <span className="nori-badge">
-                          <IconExerciseType type={a.exerciseSnapshot.type} />
-                          <strong>{a.exerciseKey}</strong>
-                        </span>
-                        {a.grading === 'deterministic' && (
-                          <span className={`nori-badge ${a.correct === 1 ? 'nori-badge--correct' : 'nori-badge--incorrect'}`}>
-                            {a.correct === 1 ? <IconCheckCircle /> : <IconXCircle />}
-                            <span>{a.correct === 1 ? 'Correct' : 'Incorrect'}</span>
-                          </span>
-                        )}
+                {attempts.map((a) => {
+                  const isChecked = selectedIds.includes(a.id)
+                  const isSingleLine = !a.answer.includes('\n')
+                  return (
+                    <label key={a.id} className={`nori-option${isChecked ? ' nori-option--selected' : ''}`}>
+                      <input type="checkbox" data-ui="nori" checked={isChecked} onChange={() => toggleAttempt(a.id)} />
+                      <div className="nori-option__body">
+                        <div className="nori-attempt__summary">
+                          <span className="nori-index-badge">{a.exerciseKey}</span>
+                          {a.grading === 'deterministic' && (
+                            <span className={`nori-badge ${a.correct === 1 ? 'nori-badge--correct' : 'nori-badge--incorrect'}`}>
+                              {a.correct === 1 ? <IconCheckCircle /> : <IconXCircle />}
+                              <span>{a.correct === 1 ? 'Correct' : 'Incorrect'}</span>
+                            </span>
+                          )}
+                          {a.grading === 'unscored' && (
+                            <span className="nori-badge">
+                              <IconExerciseType type={a.exerciseSnapshot.type} />
+                              <span>{a.exerciseSnapshot.type}</span>
+                            </span>
+                          )}
+                          {isSingleLine && (
+                            <span className="nori-attempt__answer nori-attempt__answer--inline">
+                              {renderInlineMarkdown(a.answer)}
+                            </span>
+                          )}
+                        </div>
+                        {!isSingleLine && <div className="nori-attempt__answer">{renderRichText(a.answer)}</div>}
                       </div>
-                      <div className="nori-attempt__answer">{renderRichText(a.answer)}</div>
-                    </div>
-                  </label>
-                ))}
+                    </label>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -186,7 +200,7 @@ export function NoriTutor({
                 <div key={t.id} className={t.role === 'assistant' ? 'nori-feedback' : 'nori-attempt'}>
                   <div className="nori-feedback__header">
                     {t.role === 'assistant' ? <IconSparkles /> : <IconUser />}
-                    <strong>{t.role === 'assistant' ? 'Tutor' : 'You'}</strong>
+                    <strong>{t.role === 'assistant' ? 'Nori Tutor' : 'You'}</strong>
                   </div>
                   <div className="nori-attempt__answer">{renderRichText(t.content)}</div>
                   {t.role === 'assistant' && (
@@ -203,11 +217,22 @@ export function NoriTutor({
             <textarea
               data-ui="nori"
               className="nori-textarea"
-              placeholder="Ask a question about this lesson or your selected attempts…"
+              placeholder="Ask a question about this lesson or your selected attempts… (Ctrl/Cmd + Enter to send)"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !busy && lesson && llmConfigured && message.trim()) {
+                  e.preventDefault()
+                  handleSend()
+                }
+              }}
             />
-            <div className="nori-actions">
+            <div className="nori-card__top">
+              <span className="nori-muted">
+                {selectedIds.length > 0
+                  ? `Lesson context + ${selectedIds.length} attempt(s) attached`
+                  : 'Lesson context attached'}
+              </span>
               <button
                 type="button"
                 data-ui="nori"

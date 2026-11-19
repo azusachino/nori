@@ -45,6 +45,8 @@ function notifyPracticeUpdated(courseKey: string, lessonKey: string) {
   }
 }
 
+const OPTION_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
 export function NoriPractice({
   courseKey,
   lessonKey = '',
@@ -241,13 +243,24 @@ export function NoriPractice({
     }
   }
 
+  const completedCount = exercises.filter(
+    (ex) => attempts.some((a) => a.exerciseKey === ex.key) || Boolean(drafts[ex.key]),
+  ).length
+
   return (
     <section className="nori-practice" aria-label={title}>
       <header className="nori-practice__header">
-        <h3 className="nori-practice__title">
-          <IconBookOpen />
-          <span>{title}</span>
-        </h3>
+        <div className="nori-practice__title-group">
+          <span className="nori-header-icon">
+            <IconBookOpen />
+          </span>
+          <h3 className="nori-practice__title">{title}</h3>
+          {exercises.length > 0 && (
+            <span className="nori-badge">
+              {completedCount} / {exercises.length} done
+            </span>
+          )}
+        </div>
         <div className="nori-practice__meta">
           {connectionState === 'online' ? (
             <span className="nori-badge nori-badge--online" data-nori-status="online">
@@ -257,14 +270,14 @@ export function NoriPractice({
           ) : connectionState === 'offline' ? (
             <span className="nori-badge nori-badge--warn" data-nori-status="offline">
               <IconWifiOff />
-              <span>Offline · local mode (AI feedback &amp; sync paused)</span>
+              <span>Offline · local mode</span>
             </span>
           ) : (
             <span className="nori-badge" data-nori-status="checking">
               <span>Checking sidecar…</span>
             </span>
           )}
-          <button type="button" data-ui="nori" className="nori-btn" onClick={handleCopyMarkdown}>
+          <button type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={handleCopyMarkdown}>
             {copied ? <IconCheck /> : <IconCopy />}
             <span>{copied ? 'Copied Markdown' : 'Copy as Markdown'}</span>
           </button>
@@ -274,7 +287,7 @@ export function NoriPractice({
       {bankError && <p className="nori-error">{bankError}</p>}
       {errorByKey._global && <p className="nori-error">{errorByKey._global}</p>}
 
-      {exercises.map((exercise) => {
+      {exercises.map((exercise, exIdx) => {
         const exerciseAttempts = attempts.filter((item) => item.exerciseKey === exercise.key)
         const currentHash = hashes[exercise.key]
         const localDraft = drafts[exercise.key]
@@ -289,6 +302,7 @@ export function NoriPractice({
           <article key={exercise.key} className="nori-card" data-exercise-key={exercise.key}>
             <div className="nori-card__top">
               <div className="nori-practice__meta">
+                <span className="nori-index-badge">#{String(exIdx + 1).padStart(2, '0')}</span>
                 <span className="nori-badge">
                   <IconExerciseType type={exercise.type} />
                   <span>{exercise.type.replace('_', ' ')}</span>
@@ -317,23 +331,27 @@ export function NoriPractice({
             {exercise.type === 'multiple_choice' ? (
               <div className="nori-options" role="radiogroup" aria-label={exercise.prompt}>
                 {exercise.options.map((option, optIdx) => {
+                  const isSelected = value === option
                   const isCorrectOption = hasSubmitted && option === exercise.answer
                   const isWrongPicked = hasSubmitted && latestAnswer === option && option !== exercise.answer
-                  const optClass = isCorrectOption
-                    ? 'nori-option nori-option--correct'
-                    : isWrongPicked
-                      ? 'nori-option nori-option--incorrect'
-                      : 'nori-option'
+                  const classes = ['nori-option', 'nori-option--has-key']
+                  if (isCorrectOption) classes.push('nori-option--correct')
+                  else if (isWrongPicked) classes.push('nori-option--incorrect')
+                  else if (isSelected) classes.push('nori-option--selected')
+
                   return (
-                    <label key={option} className={optClass}>
+                    <label key={option} className={classes.join(' ')}>
                       <input
                         type="radio"
                         data-ui="nori"
                         name={`nori-${courseKey}-${lessonKey}-${exercise.key}`}
                         value={option}
-                        checked={value === option}
+                        checked={isSelected}
                         onChange={() => setInputs((prev) => ({ ...prev, [exercise.key]: option }))}
                       />
+                      <span className="nori-option__key" aria-hidden="true">
+                        {OPTION_KEYS[optIdx] ?? optIdx + 1}
+                      </span>
                       {exercise.optionHtmls?.[optIdx] ? (
                         <span className="nori-option__body" dangerouslySetInnerHTML={{ __html: exercise.optionHtmls[optIdx]! }} />
                       ) : (
@@ -421,70 +439,63 @@ export function NoriPractice({
 
             {exerciseAttempts.length > 0 && (
               <div className="nori-history">
-                <p className="nori-muted">Recorded attempts ({exerciseAttempts.length})</p>
+                <div className="nori-history__header">
+                  <p className="nori-muted">Recorded attempts ({exerciseAttempts.length})</p>
+                </div>
                 {exerciseAttempts.map((attempt) => {
                   const drifted = Boolean(currentHash && attempt.contentHash !== currentHash)
                   const noteValue = noteInputs[attempt.id] ?? attempt.ownerNote
+                  const isSingleLine = !attempt.answer.includes('\n')
                   return (
                     <div key={attempt.id} className="nori-attempt" data-attempt-id={attempt.id}>
-                      <div className="nori-card__top">
-                        <span
-                          className={`nori-badge ${
-                            attempt.grading === 'deterministic'
-                              ? attempt.correct === 1
-                                ? 'nori-badge--correct'
-                                : 'nori-badge--incorrect'
-                              : ''
-                          }`}
-                        >
-                          {attempt.grading === 'deterministic' ? (
-                            attempt.correct === 1 ? (
-                              <>
-                                <IconCheckCircle />
-                                <span>Correct</span>
-                              </>
+                      <div className="nori-attempt__header">
+                        <div className="nori-attempt__summary">
+                          <span
+                            className={`nori-badge ${
+                              attempt.grading === 'deterministic'
+                                ? attempt.correct === 1
+                                  ? 'nori-badge--correct'
+                                  : 'nori-badge--incorrect'
+                                : ''
+                            }`}
+                          >
+                            {attempt.grading === 'deterministic' ? (
+                              attempt.correct === 1 ? (
+                                <>
+                                  <IconCheckCircle />
+                                  <span>Correct</span>
+                                </>
+                              ) : (
+                                <>
+                                  <IconXCircle />
+                                  <span>Incorrect</span>
+                                </>
+                              )
                             ) : (
                               <>
-                                <IconXCircle />
-                                <span>Incorrect</span>
+                                <IconExerciseType type={attempt.exerciseSnapshot.type} />
+                                <span>Unscored</span>
                               </>
-                            )
-                          ) : (
-                            <>
-                              <IconExerciseType type={attempt.exerciseSnapshot.type} />
-                              <span>Unscored</span>
-                            </>
-                          )}
-                        </span>
-                        {drifted && (
-                          <span className="nori-badge nori-badge--warn">
-                            <IconAlertTriangle />
-                            <span>Previous question version</span>
+                            )}
                           </span>
-                        )}
-                      </div>
-
-                      {drifted && (
-                        <div className="nori-muted">Prompt at attempt time: {renderRichText(attempt.exerciseSnapshot.prompt)}</div>
-                      )}
-                      <div className="nori-attempt__answer">{renderRichText(attempt.answer)}</div>
-
-                      {attempt.feedback && (
-                        <div className="nori-feedback">
-                          <div className="nori-feedback__header">
-                            <IconSparkles />
-                            <strong>Advisory AI feedback</strong>
-                          </div>
-                          <div className="nori-attempt__answer">{renderRichText(attempt.feedback)}</div>
+                          {drifted && (
+                            <span className="nori-badge nori-badge--warn">
+                              <IconAlertTriangle />
+                              <span>Previous question version</span>
+                            </span>
+                          )}
+                          {isSingleLine && (
+                            <span className="nori-attempt__answer nori-attempt__answer--inline">
+                              {renderInlineMarkdown(attempt.answer)}
+                            </span>
+                          )}
                         </div>
-                      )}
 
-                      {attempt.grading === 'unscored' && connectionState === 'online' && (
-                        <div className="nori-actions">
+                        {attempt.grading === 'unscored' && connectionState === 'online' && (
                           <button
                             type="button"
                             data-ui="nori"
-                            className="nori-btn"
+                            className="nori-btn nori-btn--sm"
                             disabled={busyKey === `feedback:${attempt.id}` || !health?.llmConfigured}
                             onClick={() => handleFeedback(attempt)}
                           >
@@ -497,6 +508,21 @@ export function NoriPractice({
                                   : 'Ask AI for advisory feedback'}
                             </span>
                           </button>
+                        )}
+                      </div>
+
+                      {drifted && (
+                        <div className="nori-muted">Prompt at attempt time: {renderRichText(attempt.exerciseSnapshot.prompt)}</div>
+                      )}
+                      {!isSingleLine && <div className="nori-attempt__answer">{renderRichText(attempt.answer)}</div>}
+
+                      {attempt.feedback && (
+                        <div className="nori-feedback">
+                          <div className="nori-feedback__header">
+                            <IconSparkles />
+                            <strong>Advisory AI feedback</strong>
+                          </div>
+                          <div className="nori-attempt__answer">{renderRichText(attempt.feedback)}</div>
                         </div>
                       )}
 
@@ -505,8 +531,7 @@ export function NoriPractice({
                           <input
                             type="text"
                             data-ui="nori"
-                            className="nori-textarea"
-                            style={{ minHeight: '36px', flex: '1 1 200px' }}
+                            className="nori-input-inline"
                             placeholder="Record correction or takeaway…"
                             value={noteValue}
                             onChange={(e) => setNoteInputs((prev) => ({ ...prev, [attempt.id]: e.target.value }))}
@@ -514,7 +539,7 @@ export function NoriPractice({
                           <button
                             type="button"
                             data-ui="nori"
-                            className="nori-btn"
+                            className="nori-btn nori-btn--sm"
                             disabled={busyKey === `correct:${attempt.id}`}
                             onClick={() => handleCorrection(attempt)}
                           >

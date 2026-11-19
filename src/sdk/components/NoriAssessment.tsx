@@ -32,6 +32,8 @@ export type NoriAssessmentProps = {
   title?: string
 }
 
+const OPTION_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
 export function NoriAssessment({
   courseKey,
   lessonKey = '',
@@ -185,10 +187,12 @@ export function NoriAssessment({
   return (
     <section className="nori-practice" aria-label={title}>
       <header className="nori-practice__header">
-        <h3 className="nori-practice__title">
-          <IconClipboardCheck />
-          <span>{title}</span>
-        </h3>
+        <div className="nori-practice__title-group">
+          <span className="nori-header-icon">
+            <IconClipboardCheck />
+          </span>
+          <h3 className="nori-practice__title">{title}</h3>
+        </div>
         <span className={`nori-badge ${online === 'online' ? 'nori-badge--online' : 'nori-badge--warn'}`} data-nori-status={online}>
           {online === 'online' ? <IconWifi /> : <IconWifiOff />}
           <span>
@@ -202,11 +206,11 @@ export function NoriAssessment({
       {online === 'online' && !active && (
         <div className="nori-card">
           <div className="nori-actions">
-            <label className="nori-badge">
+            <label className="nori-badge" style={{ cursor: 'pointer' }}>
               <input type="radio" data-ui="nori" name={`mode-${courseKey}`} checked={mode === 'untimed'} onChange={() => setMode('untimed')} />
               <span>Untimed</span>
             </label>
-            <label className="nori-badge">
+            <label className="nori-badge" style={{ cursor: 'pointer' }}>
               <input type="radio" data-ui="nori" name={`mode-${courseKey}`} checked={mode === 'timed'} onChange={() => setMode('timed')} />
               <IconClock />
               <span>Timed ({minutes}m)</span>
@@ -215,11 +219,12 @@ export function NoriAssessment({
               <input
                 type="number"
                 data-ui="nori"
+                className="nori-input-inline"
                 min={1}
                 max={480}
                 value={minutes}
                 onChange={(e) => setMinutes(Math.max(1, Number(e.target.value) || 15))}
-                style={{ width: '5rem', padding: '0.25rem 0.4rem' }}
+                style={{ width: '5rem', flex: '0 0 5rem' }}
               />
             )}
             <button
@@ -236,16 +241,16 @@ export function NoriAssessment({
           {assessments.length > 0 && (
             <div className="nori-history">
               <p className="nori-muted">Previous assessments ({assessments.length})</p>
-              {assessments.map((a) => (
-                <div key={a.id} className="nori-actions">
-                  <button type="button" data-ui="nori" className="nori-btn" onClick={() => syncAssessment(a)}>
+              <div className="nori-actions">
+                {assessments.map((a) => (
+                  <button key={a.id} type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => syncAssessment(a)}>
                     <IconClipboardCheck />
                     <span>
                       {a.title} · {a.status}
                     </span>
                   </button>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -263,22 +268,25 @@ export function NoriAssessment({
                   <span>{Math.ceil(active.remainingMs / 1000)}s left</span>
                 </span>
               )}
-              <button type="button" data-ui="nori" className="nori-btn" onClick={() => setActive(null)}>
+              <button type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => setActive(null)}>
                 <IconChevronLeft />
                 <span>All assessments</span>
               </button>
             </div>
           </div>
 
-          {active.items.map((item) => {
+          {active.items.map((item, idx) => {
             const bankEx = exercises.find((e) => e.key === item.exerciseKey)
             return (
               <div key={item.id} className="nori-attempt">
                 <div className="nori-card__top">
-                  <span className="nori-badge">
-                    <IconExerciseType type={item.type} />
-                    <span>{item.type.replace('_', ' ')}</span>
-                  </span>
+                  <div className="nori-practice__meta">
+                    <span className="nori-index-badge">#{String(idx + 1).padStart(2, '0')}</span>
+                    <span className="nori-badge">
+                      <IconExerciseType type={item.type} />
+                      <span>{item.type.replace('_', ' ')}</span>
+                    </span>
+                  </div>
                   {active.status !== 'active' && item.result && (
                     <span
                       className={`nori-badge ${
@@ -318,22 +326,31 @@ export function NoriAssessment({
                   <>
                     {item.type === 'multiple_choice' ? (
                       <div className="nori-options">
-                        {item.options.map((opt, optIdx) => (
-                          <label key={opt} className="nori-option">
-                            <input
-                              type="radio"
-                              data-ui="nori"
-                              name={`assess-${active.id}-${item.id}`}
-                              checked={(answers[item.id] ?? '') === opt}
-                              onChange={() => setAnswers((prev) => ({ ...prev, [item.id]: opt }))}
-                            />
-                            {bankEx?.optionHtmls?.[optIdx] ? (
-                              <span className="nori-option__body" dangerouslySetInnerHTML={{ __html: bankEx.optionHtmls[optIdx]! }} />
-                            ) : (
-                              <span className="nori-option__body">{renderInlineMarkdown(opt)}</span>
-                            )}
-                          </label>
-                        ))}
+                        {item.options.map((opt, optIdx) => {
+                          const isSelected = (answers[item.id] ?? '') === opt
+                          return (
+                            <label
+                              key={opt}
+                              className={`nori-option nori-option--has-key${isSelected ? ' nori-option--selected' : ''}`}
+                            >
+                              <input
+                                type="radio"
+                                data-ui="nori"
+                                name={`assess-${active.id}-${item.id}`}
+                                checked={isSelected}
+                                onChange={() => setAnswers((prev) => ({ ...prev, [item.id]: opt }))}
+                              />
+                              <span className="nori-option__key" aria-hidden="true">
+                                {OPTION_KEYS[optIdx] ?? optIdx + 1}
+                              </span>
+                              {bankEx?.optionHtmls?.[optIdx] ? (
+                                <span className="nori-option__body" dangerouslySetInnerHTML={{ __html: bankEx.optionHtmls[optIdx]! }} />
+                              ) : (
+                                <span className="nori-option__body">{renderInlineMarkdown(opt)}</span>
+                              )}
+                            </label>
+                          )
+                        })}
                       </div>
                     ) : (
                       <textarea
@@ -343,10 +360,18 @@ export function NoriAssessment({
                         onChange={(e) => setAnswers((prev) => ({ ...prev, [item.id]: e.target.value }))}
                       />
                     )}
-                    <button type="button" data-ui="nori" className="nori-btn" disabled={busy === `save:${item.id}`} onClick={() => handleSaveItem(item.id)}>
-                      <IconBookmark />
-                      <span>{busy === `save:${item.id}` ? 'Saving…' : 'Save answer'}</span>
-                    </button>
+                    <div className="nori-actions">
+                      <button
+                        type="button"
+                        data-ui="nori"
+                        className="nori-btn nori-btn--sm"
+                        disabled={busy === `save:${item.id}`}
+                        onClick={() => handleSaveItem(item.id)}
+                      >
+                        <IconBookmark />
+                        <span>{busy === `save:${item.id}` ? 'Saving…' : 'Save answer'}</span>
+                      </button>
+                    </div>
                   </>
                 ) : (
                   <>
@@ -382,30 +407,34 @@ export function NoriAssessment({
                       </div>
                     )}
 
-                    {item.result?.grading === 'unscored' && item.answer && (
-                      <button
-                        type="button"
-                        data-ui="nori"
-                        className="nori-btn"
-                        disabled={busy === `fb:${item.id}` || !llmConfigured}
-                        onClick={() => handleFeedback(item.id)}
-                      >
-                        <IconSparkles />
-                        <span>Ask AI for advisory feedback</span>
-                      </button>
-                    )}
-
                     <div className="nori-actions">
+                      {item.result?.grading === 'unscored' && item.answer && (
+                        <button
+                          type="button"
+                          data-ui="nori"
+                          className="nori-btn nori-btn--sm"
+                          disabled={busy === `fb:${item.id}` || !llmConfigured}
+                          onClick={() => handleFeedback(item.id)}
+                        >
+                          <IconSparkles />
+                          <span>Ask AI for advisory feedback</span>
+                        </button>
+                      )}
                       <input
                         type="text"
                         data-ui="nori"
-                        className="nori-textarea"
-                        style={{ minHeight: '36px', flex: '1 1 200px' }}
+                        className="nori-input-inline"
                         placeholder="Correction note…"
                         value={notes[item.id] ?? item.result?.ownerNote ?? ''}
                         onChange={(e) => setNotes((prev) => ({ ...prev, [item.id]: e.target.value }))}
                       />
-                      <button type="button" data-ui="nori" className="nori-btn" disabled={busy === `corr:${item.id}`} onClick={() => handleCorrect(item.id)}>
+                      <button
+                        type="button"
+                        data-ui="nori"
+                        className="nori-btn nori-btn--sm"
+                        disabled={busy === `corr:${item.id}`}
+                        onClick={() => handleCorrect(item.id)}
+                      >
                         <IconBookmark />
                         <span>Save correction</span>
                       </button>
@@ -417,10 +446,12 @@ export function NoriAssessment({
           })}
 
           {active.status === 'active' && (
-            <button type="button" data-ui="nori" className="nori-btn nori-btn--primary" disabled={busy === 'submit'} onClick={handleSubmit}>
-              <IconSend />
-              <span>{busy === 'submit' ? 'Submitting…' : 'Submit assessment'}</span>
-            </button>
+            <div className="nori-actions">
+              <button type="button" data-ui="nori" className="nori-btn nori-btn--primary" disabled={busy === 'submit'} onClick={handleSubmit}>
+                <IconSend />
+                <span>{busy === 'submit' ? 'Submitting…' : 'Submit assessment'}</span>
+              </button>
+            </div>
           )}
         </div>
       )}
