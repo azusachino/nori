@@ -307,18 +307,24 @@ export function NoriPractice({
         const value = inputs[exercise.key] ?? ''
         const hasSubmitted = exerciseAttempts.length > 0 || Boolean(localDraft)
 
+        const latestAttempt = exerciseAttempts[exerciseAttempts.length - 1]
+        const latestAnswer = latestAttempt?.answer ?? localDraft?.answer
+        const latestCorrect = latestAttempt ? latestAttempt.correct : localDraft?.correct
+
         return (
           <article key={exercise.key} className="nori-card" data-exercise-key={exercise.key}>
             <div className="nori-card__top">
-              <span className="nori-badge">{exercise.type.replace('_', ' ')}</span>
+              <div className="nori-practice__meta">
+                <span className="nori-badge">{exercise.type.replace('_', ' ')}</span>
+                {exercise.type === 'multiple_choice' && latestCorrect !== null && latestCorrect !== undefined && (
+                  <span className={`nori-badge ${latestCorrect === 1 ? 'nori-badge--correct' : 'nori-badge--incorrect'}`}>
+                    {latestCorrect === 1 ? '✓ Correct' : '✗ Incorrect'}
+                  </span>
+                )}
+              </div>
               {localDraft && (
                 <span className="nori-badge nori-badge--warn">
                   Unsent local draft
-                  {exercise.type === 'multiple_choice' && localDraft.correct !== null && localDraft.correct !== undefined
-                    ? localDraft.correct === 1
-                      ? ' · Correct'
-                      : ' · Incorrect'
-                    : ''}
                 </span>
               )}
             </div>
@@ -331,23 +337,32 @@ export function NoriPractice({
 
             {exercise.type === 'multiple_choice' ? (
               <div className="nori-options" role="radiogroup" aria-label={exercise.prompt}>
-                {exercise.options.map((option, optIdx) => (
-                  <label key={option} className="nori-option">
-                    <input
-                      type="radio"
-                      data-ui="nori"
-                      name={`nori-${courseKey}-${lessonKey}-${exercise.key}`}
-                      value={option}
-                      checked={value === option}
-                      onChange={() => setInputs((prev) => ({ ...prev, [exercise.key]: option }))}
-                    />
-                    {exercise.optionHtmls?.[optIdx] ? (
-                      <span dangerouslySetInnerHTML={{ __html: exercise.optionHtmls[optIdx]! }} />
-                    ) : (
-                      <span>{renderInlineMarkdown(option)}</span>
-                    )}
-                  </label>
-                ))}
+                {exercise.options.map((option, optIdx) => {
+                  const isCorrectOption = hasSubmitted && option === exercise.answer
+                  const isWrongPicked = hasSubmitted && latestAnswer === option && option !== exercise.answer
+                  const optClass = isCorrectOption
+                    ? 'nori-option nori-option--correct'
+                    : isWrongPicked
+                      ? 'nori-option nori-option--incorrect'
+                      : 'nori-option'
+                  return (
+                    <label key={option} className={optClass}>
+                      <input
+                        type="radio"
+                        data-ui="nori"
+                        name={`nori-${courseKey}-${lessonKey}-${exercise.key}`}
+                        value={option}
+                        checked={value === option}
+                        onChange={() => setInputs((prev) => ({ ...prev, [exercise.key]: option }))}
+                      />
+                      {exercise.optionHtmls?.[optIdx] ? (
+                        <span dangerouslySetInnerHTML={{ __html: exercise.optionHtmls[optIdx]! }} />
+                      ) : (
+                        <span>{renderInlineMarkdown(option)}</span>
+                      )}
+                    </label>
+                  )
+                })}
               </div>
             ) : (
               <textarea
@@ -417,11 +432,19 @@ export function NoriPractice({
                   return (
                     <div key={attempt.id} className="nori-attempt" data-attempt-id={attempt.id}>
                       <div className="nori-card__top">
-                        <span className="nori-badge">
+                        <span
+                          className={`nori-badge ${
+                            attempt.grading === 'deterministic'
+                              ? attempt.correct === 1
+                                ? 'nori-badge--correct'
+                                : 'nori-badge--incorrect'
+                              : ''
+                          }`}
+                        >
                           {attempt.grading === 'deterministic'
                             ? attempt.correct === 1
-                              ? 'Correct'
-                              : 'Incorrect'
+                              ? '✓ Correct'
+                              : '✗ Incorrect'
                             : 'Unscored'}
                         </span>
                         {drifted && <span className="nori-badge nori-badge--warn">Previous question version</span>}
@@ -760,8 +783,16 @@ export function NoriAssessment({
                 <>
                   <p className="nori-attempt__answer">{item.answer ?? '(Unanswered)'}</p>
                   {item.result && (
-                    <span className="nori-badge">
-                      {item.result.grading === 'deterministic' ? (item.result.correct === 1 ? 'Correct' : 'Incorrect') : 'Unscored'}
+                    <span
+                      className={`nori-badge ${
+                        item.result.grading === 'deterministic'
+                          ? item.result.correct === 1
+                            ? 'nori-badge--correct'
+                            : 'nori-badge--incorrect'
+                          : ''
+                      }`}
+                    >
+                      {item.result.grading === 'deterministic' ? (item.result.correct === 1 ? '✓ Correct' : '✗ Incorrect') : 'Unscored'}
                     </span>
                   )}
                   {item.referenceAnswer && (

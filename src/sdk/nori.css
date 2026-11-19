@@ -64,6 +64,28 @@
   border-style: dashed;
 }
 
+.nori-badge--correct {
+  border-color: #16a34a;
+  background: color-mix(in srgb, #16a34a 14%, var(--nori-surface));
+  color: #15803d;
+  font-weight: 600;
+}
+
+:root[data-theme="dark"] .nori-badge--correct {
+  color: #4ade80;
+}
+
+.nori-badge--incorrect {
+  border-color: #dc2626;
+  background: color-mix(in srgb, #dc2626 14%, var(--nori-surface));
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+:root[data-theme="dark"] .nori-badge--incorrect {
+  color: #f87171;
+}
+
 .nori-btn {
   display: inline-flex;
   align-items: center;
@@ -134,6 +156,16 @@
   border: 1px solid var(--nori-line);
   background: var(--nori-surface);
   cursor: pointer;
+}
+
+.nori-option--correct {
+  border-color: #16a34a;
+  background: color-mix(in srgb, #16a34a 10%, var(--nori-surface));
+}
+
+.nori-option--incorrect {
+  border-color: #dc2626;
+  background: color-mix(in srgb, #dc2626 10%, var(--nori-surface));
 }
 
 .nori-option input[type="radio"] {
