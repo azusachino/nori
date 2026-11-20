@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AssessmentAnswerSync,
+  createCountdown,
+  formatCountdown,
+  localDeadline,
+  type AnswerSaveState,
+} from '../assessment-sync'
+import {
+  getSharedNoriClient,
   NoriApiError,
-  NoriClient,
   type AssessmentDetail,
   type PracticeBank,
   type PracticeExercise,
@@ -21,6 +28,7 @@ import {
   IconWifiOff,
   IconXCircle,
 } from './icons'
+import { useNoriConnection } from './connection'
 import { renderInlineMarkdown, renderRichText } from './markdown'
 
 export type NoriAssessmentProps = {
@@ -34,6 +42,16 @@ export type NoriAssessmentProps = {
 
 const OPTION_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
+/** Flush unsaved answers this close to the deadline so they land before the server finalizes. */
+const DEADLINE_FLUSH_MS = 2000
+
+const SAVE_STATE_LABEL: Record<AnswerSaveState, string> = {
+  pending: 'Unsaved changes',
+  saving: 'Saving…',
+  saved: 'Saved',
+  error: 'Not saved',
+}
+
 export function NoriAssessment({
   courseKey,
   lessonKey = '',
@@ -42,9 +60,8 @@ export function NoriAssessment({
   apiBaseUrl = '/api/nori/v1',
   title = 'Assessment',
 }: NoriAssessmentProps) {
-  const client = useMemo(() => new NoriClient({ baseUrl: apiBaseUrl }), [apiBaseUrl])
+  const client = useMemo(() => getSharedNoriClient(apiBaseUrl), [apiBaseUrl])
   const [exercises, setExercises] = useState<PracticeExercise[]>(inlineExercises ?? [])
-  const [online, setOnline] = useState<'checking' | 'online' | 'offline'>('checking')
   const [llmConfigured, setLlmConfigured] = useState(false)
   const [assessments, setAssessments] = useState<AssessmentDetail[]>([])
   const [active, setActive] = useState<AssessmentDetail | null>(null)
@@ -52,8 +69,12 @@ export function NoriAssessment({
   const [minutes, setMinutes] = useState(15)
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [notes, setNotes] = useState<Record<string, string>>({})
+  const [saveStates, setSaveStates] = useState<Record<string, AnswerSaveState>>({})
+  const [deadline, setDeadline] = useState<number | null>(null)
+  const [remainingMs, setRemainingMs] = useState<number | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const syncRef = useRef<AssessmentAnswerSync | null>(null)
 
   useEffect(() => {
     if (inlineExercises) {
@@ -71,32 +92,94 @@ export function NoriAssessment({
     return () => controller.abort()
   }, [bank, inlineExercises])
 
-  useEffect(() => {
-    const controller = new AbortController()
-    client
-      .health(controller.signal)
-      .then(async (h) => {
-        if (controller.signal.aborted) return
-        setLlmConfigured(h.llmConfigured)
-        setOnline('online')
-        const list = await client.listAssessments(courseKey, controller.signal)
-        if (!controller.signal.aborted) setAssessments(list.assessments)
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setOnline('offline')
-      })
-    return () => controller.abort()
-  }, [client, courseKey])
-
-  const syncAssessment = (detail: AssessmentDetail) => {
+  const syncAssessment = useCallback((detail: AssessmentDetail) => {
     setActive(detail)
+    setDeadline(localDeadline(detail))
     setAssessments((prev) => [detail, ...prev.filter((a) => a.id !== detail.id)])
     const nextAnswers: Record<string, string> = {}
     for (const item of detail.items) {
       if (item.answer !== null) nextAnswers[item.id] = item.answer
     }
     setAnswers((prev) => ({ ...nextAnswers, ...prev }))
-  }
+  }, [])
+
+  // The list call doubles as the health check; /health only adds llmConfigured.
+  const loadFromSidecar = useCallback(
+    async (signal?: AbortSignal) => {
+      client
+        .health(signal)
+        .then((h) => {
+          if (!signal?.aborted) setLlmConfigured(h.llmConfigured)
+        })
+        .catch(() => undefined)
+      try {
+        const list = await client.listAssessments(courseKey, signal)
+        if (!signal?.aborted) setAssessments(list.assessments)
+      } catch {
+        // The shared client tracks offline state and retries with backoff.
+      }
+    },
+    [client, courseKey],
+  )
+
+  const online = useNoriConnection(client, () => {
+    loadFromSidecar()
+    // Answers typed while offline are still queued; save them now.
+    syncRef.current?.flush().catch(() => undefined)
+  })
+
+  useEffect(() => {
+    const controller = new AbortController()
+    loadFromSidecar(controller.signal)
+    return () => controller.abort()
+  }, [loadFromSidecar])
+
+  // One auto-save queue per active assessment.
+  const activeId = active?.status === 'active' ? active.id : null
+  useEffect(() => {
+    if (!activeId || !active) return
+    const sync = new AssessmentAnswerSync({
+      client,
+      assessment: active,
+      onUpdate: syncAssessment,
+      onStateChange: setSaveStates,
+    })
+    syncRef.current = sync
+    setSaveStates({})
+    return () => {
+      sync.flush().catch(() => undefined)
+      sync.dispose()
+      if (syncRef.current === sync) syncRef.current = null
+    }
+    // Recreate only when a different assessment becomes active.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, client, syncAssessment])
+
+  // Tick from the server deadline. At expiry the server finalizes the assessment
+  // as "expired" with the answers saved so far, so lock inputs and reload it.
+  useEffect(() => {
+    if (deadline === null || !activeId) {
+      setRemainingMs(null)
+      return
+    }
+    return createCountdown({
+      deadline,
+      onTick: (ms) => {
+        setRemainingMs(ms)
+        if (ms <= DEADLINE_FLUSH_MS && syncRef.current?.hasUnsaved) syncRef.current.flush().catch(() => undefined)
+      },
+      onExpire: () => {
+        const sync = syncRef.current
+        ;(sync ? sync.flush() : Promise.resolve())
+          .catch(() => undefined)
+          .then(() => client.getAssessment(activeId))
+          .then(syncAssessment)
+          .catch((e) => setError(e instanceof Error ? e.message : 'Could not reload the expired assessment.'))
+      },
+    })
+  }, [deadline, activeId, client, syncAssessment])
+
+  const timeUp = remainingMs === 0
 
   const handleCreateAndStart = async () => {
     if (!exercises.length) return
@@ -124,30 +207,24 @@ export function NoriAssessment({
     }
   }
 
-  const handleSaveItem = async (itemId: string) => {
-    if (!active) return
-    setBusy(`save:${itemId}`)
-    setError(null)
-    try {
-      const updated = await client.saveAssessmentAnswer(active.id, itemId, answers[itemId] ?? '', active.version)
-      syncAssessment(updated)
-    } catch (e) {
-      if (e instanceof NoriApiError && e.assessment) syncAssessment(e.assessment)
-      setError(e instanceof Error ? e.message : 'Could not save answer.')
-    } finally {
-      setBusy(null)
-    }
+  const handleAnswerChange = (itemId: string, answer: string) => {
+    setAnswers((prev) => ({ ...prev, [itemId]: answer }))
+    syncRef.current?.setAnswer(itemId, answer)
+  }
+
+  const handleAnswerBlur = () => {
+    syncRef.current?.flush().catch((e) => setError(e instanceof Error ? e.message : 'Could not save answer.'))
   }
 
   const handleSubmit = async () => {
-    if (!active) return
+    const sync = syncRef.current
+    if (!sync) return
     setBusy('submit')
     setError(null)
     try {
-      const finalized = await client.submitAssessment(active.id, active.version)
-      syncAssessment(finalized)
+      // submit() saves every pending answer first, so nothing is graded blank by accident.
+      await sync.submit()
     } catch (e) {
-      if (e instanceof NoriApiError && e.assessment) syncAssessment(e.assessment)
       setError(e instanceof Error ? e.message : 'Could not submit assessment.')
     } finally {
       setBusy(null)
@@ -196,7 +273,11 @@ export function NoriAssessment({
         <span className={`nori-badge ${online === 'online' ? 'nori-badge--online' : 'nori-badge--warn'}`} data-nori-status={online}>
           {online === 'online' ? <IconWifi /> : <IconWifiOff />}
           <span>
-            {online === 'online' ? 'Nori sidecar connected' : online === 'offline' ? 'Offline · assessments require sidecar' : 'Checking sidecar…'}
+            {online === 'online'
+              ? 'Nori sidecar connected'
+              : online === 'offline'
+                ? 'Offline · retrying; answers save when the sidecar is back'
+                : 'Checking sidecar…'}
           </span>
         </span>
       </header>
@@ -262,10 +343,10 @@ export function NoriAssessment({
             <strong>{active.title}</strong>
             <div className="nori-practice__meta">
               <span className="nori-badge">{active.status}</span>
-              {active.remainingMs !== null && (
-                <span className="nori-badge">
+              {active.status === 'active' && remainingMs !== null && (
+                <span className={`nori-badge${remainingMs <= 60_000 ? ' nori-badge--warn' : ''}`} role="timer" aria-live="off">
                   <IconClock />
-                  <span>{Math.ceil(active.remainingMs / 1000)}s left</span>
+                  <span>{timeUp ? 'Time is up' : `${formatCountdown(remainingMs)} left`}</span>
                 </span>
               )}
               <button type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => setActive(null)}>
@@ -338,7 +419,9 @@ export function NoriAssessment({
                                 data-ui="nori"
                                 name={`assess-${active.id}-${item.id}`}
                                 checked={isSelected}
-                                onChange={() => setAnswers((prev) => ({ ...prev, [item.id]: opt }))}
+                                disabled={timeUp}
+                                onChange={() => handleAnswerChange(item.id, opt)}
+                                onBlur={handleAnswerBlur}
                               />
                               <span className="nori-option__key" aria-hidden="true">
                                 {OPTION_KEYS[optIdx] ?? optIdx + 1}
@@ -357,21 +440,16 @@ export function NoriAssessment({
                         data-ui="nori"
                         className={`nori-textarea${item.type === 'code' ? ' nori-textarea--code' : ''}`}
                         value={answers[item.id] ?? ''}
-                        onChange={(e) => setAnswers((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                        readOnly={timeUp}
+                        onChange={(e) => handleAnswerChange(item.id, e.target.value)}
+                        onBlur={handleAnswerBlur}
                       />
                     )}
-                    <div className="nori-actions">
-                      <button
-                        type="button"
-                        data-ui="nori"
-                        className="nori-btn nori-btn--sm"
-                        disabled={busy === `save:${item.id}`}
-                        onClick={() => handleSaveItem(item.id)}
-                      >
-                        <IconBookmark />
-                        <span>{busy === `save:${item.id}` ? 'Saving…' : 'Save answer'}</span>
-                      </button>
-                    </div>
+                    {saveStates[item.id] && (
+                      <p className="nori-muted" data-nori-save-state={saveStates[item.id]} aria-live="polite">
+                        {SAVE_STATE_LABEL[saveStates[item.id]!]}
+                      </p>
+                    )}
                   </>
                 ) : (
                   <>
@@ -447,7 +525,7 @@ export function NoriAssessment({
 
           {active.status === 'active' && (
             <div className="nori-actions">
-              <button type="button" data-ui="nori" className="nori-btn nori-btn--primary" disabled={busy === 'submit'} onClick={handleSubmit}>
+              <button type="button" data-ui="nori" className="nori-btn nori-btn--primary" disabled={busy === 'submit' || timeUp} onClick={handleSubmit}>
                 <IconSend />
                 <span>{busy === 'submit' ? 'Submitting…' : 'Submit assessment'}</span>
               </button>

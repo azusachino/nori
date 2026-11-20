@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  NoriClient,
+  getSharedNoriClient,
+  mergeAttempts,
   type PracticeAttempt,
+  type PracticeUpdatedDetail,
   type TutorTurn,
 } from '../index'
+import { useNoriConnection } from './connection'
 import {
   IconBot,
   IconCheckCircle,
@@ -32,9 +35,8 @@ export function NoriTutor({
   apiBaseUrl = '/api/nori/v1',
   title = 'Contextual tutor',
 }: NoriTutorProps) {
-  const client = useMemo(() => new NoriClient({ baseUrl: apiBaseUrl }), [apiBaseUrl])
+  const client = useMemo(() => getSharedNoriClient(apiBaseUrl), [apiBaseUrl])
   const [lesson, setLesson] = useState<{ title: string; body: string } | null>(null)
-  const [online, setOnline] = useState<'checking' | 'online' | 'offline'>('checking')
   const [llmConfigured, setLlmConfigured] = useState(false)
   const [attempts, setAttempts] = useState<PracticeAttempt[]>([])
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -54,52 +56,61 @@ export function NoriTutor({
     return () => controller.abort()
   }, [lessonAsset])
 
-  const loadPracticeAttempts = useCallback(
+  // Data calls double as the health check; the shared client dedupes the /practice
+  // and /health requests NoriPractice makes on the same page.
+  const loadFromSidecar = useCallback(
     async (signal?: AbortSignal) => {
+      client
+        .health(signal)
+        .then((h) => {
+          if (!signal?.aborted) setLlmConfigured(h.llmConfigured)
+        })
+        .catch(() => undefined)
       try {
-        const practice = await client.listPractice({ courseKey, lessonKey }, signal)
-        if (!signal?.aborted) setAttempts(practice.attempts)
+        const [practice, tutor] = await Promise.all([
+          client.listPractice({ courseKey, lessonKey }, signal),
+          client.getTutor(courseKey, lessonKey, signal),
+        ])
+        if (signal?.aborted) return
+        setAttempts(practice.attempts)
+        setTurns(tutor.turns)
       } catch {
-        // Ignore background refresh error
+        // The shared client tracks offline state and retries with backoff.
       }
     },
     [client, courseKey, lessonKey],
   )
 
+  const online = useNoriConnection(client, () => {
+    loadFromSidecar()
+  })
+
   useEffect(() => {
     const controller = new AbortController()
-    client
-      .health(controller.signal)
-      .then(async (h) => {
-        if (controller.signal.aborted) return
-        setLlmConfigured(h.llmConfigured)
-        setOnline('online')
-        const [practice, tutor] = await Promise.all([
-          client.listPractice({ courseKey, lessonKey }, controller.signal),
-          client.getTutor(courseKey, lessonKey, controller.signal),
-        ])
-        if (controller.signal.aborted) return
-        setAttempts(practice.attempts)
-        setTurns(tutor.turns)
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setOnline('offline')
-      })
+    loadFromSidecar(controller.signal)
     return () => controller.abort()
-  }, [client, courseKey, lessonKey])
+  }, [loadFromSidecar])
 
-  // Auto-sync when <NoriPractice /> on the same page creates or updates an attempt
+  // <NoriPractice /> on the same page sends the attempts it created or updated;
+  // merge them instead of refetching. Refetch only if an event carries none.
   useEffect(() => {
     if (typeof window === 'undefined') return
     const onUpdated = (e: Event) => {
-      const detail = (e as CustomEvent<{ courseKey?: string; lessonKey?: string }>).detail
-      if (!detail || (detail.courseKey === courseKey && (!detail.lessonKey || detail.lessonKey === lessonKey))) {
-        loadPracticeAttempts()
+      const detail = (e as CustomEvent<Partial<PracticeUpdatedDetail>>).detail
+      if (detail && (detail.courseKey !== courseKey || (detail.lessonKey && detail.lessonKey !== lessonKey))) return
+      const incoming = detail?.attempts
+      if (!incoming) {
+        client
+          .listPractice({ courseKey, lessonKey })
+          .then((practice) => setAttempts(practice.attempts))
+          .catch(() => undefined)
+        return
       }
+      setAttempts((prev) => mergeAttempts(prev, incoming))
     }
     window.addEventListener('nori:practice-updated', onUpdated)
     return () => window.removeEventListener('nori:practice-updated', onUpdated)
-  }, [courseKey, lessonKey, loadPracticeAttempts])
+  }, [client, courseKey, lessonKey])
 
   const toggleAttempt = (id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]))

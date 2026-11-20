@@ -6,6 +6,8 @@ export type CodeCheckItem = {
 
 export type CodeVerificationResult = {
   passed: boolean
+  /** True only when the code actually ran; otherwise the checks are text heuristics. */
+  executed: boolean
   summary: string
   output?: string
   checks: CodeCheckItem[]
@@ -138,9 +140,9 @@ function extractForbiddenTokens(prompt: string): string[] {
   return forbidden
 }
 
-async function runJsInWorker(code: string, timeoutMs = 1500): Promise<{ ok: boolean; output: string; error?: string }> {
+async function runJsInWorker(code: string, timeoutMs = 1500): Promise<{ ok: boolean; output: string; error?: string } | null> {
   if (typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL.createObjectURL !== 'function') {
-    return { ok: true, output: '' }
+    return null
   }
   const workerScript = `
     self.onmessage = async (e) => {
@@ -194,6 +196,7 @@ export async function verifyCodeInBrowser(
   if (!trimmed) {
     return {
       passed: false,
+      executed: false,
       summary: 'Enter a code attempt first.',
       checks: [{ label: 'Non-empty code snippet', passed: false }],
     }
@@ -227,24 +230,28 @@ export async function verifyCodeInBrowser(
   }
 
   let output: string | undefined
+  let executed = false
   if (lang === 'js' || lang === 'javascript' || lang === 'ts' || lang === 'typescript') {
     const res = await runJsInWorker(trimmed)
-    output = res.output || undefined
-    checks.push({
-      label: 'Sandboxed Web Worker execution',
-      passed: res.ok,
-      detail: res.error,
-    })
+    if (res) {
+      executed = true
+      output = res.output || undefined
+      checks.push({
+        label: 'Sandboxed Web Worker execution',
+        passed: res.ok,
+        detail: res.error,
+      })
+    }
   }
 
   const passedCount = checks.filter((c) => c.passed).length
   const passed = checks.every((c) => c.passed)
-  const summary = passed
-    ? `All ${checks.length} verification check(s) passed`
-    : `${passedCount} / ${checks.length} check(s) passed`
+  const kind = executed ? 'check(s)' : 'heuristic check(s), code not executed'
+  const summary = passed ? `All ${checks.length} ${kind} passed` : `${passedCount} / ${checks.length} ${kind} passed`
 
   return {
     passed,
+    executed,
     summary,
     output,
     checks,

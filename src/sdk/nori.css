@@ -363,6 +363,12 @@
   pointer-events: none;
 }
 
+/* The keyed radio is visually hidden, so show keyboard focus on its option. */
+.nori-option--has-key:has(input[type="radio"]:focus-visible) {
+  outline: 2px solid var(--nori-primary);
+  outline-offset: 2px;
+}
+
 .nori-textarea {
   width: 100%;
   min-height: 88px;
@@ -379,7 +385,8 @@
 }
 
 .nori-textarea:focus {
-  outline: none;
+  outline: 2px solid var(--nori-primary);
+  outline-offset: 2px;
   background: var(--nori-surface);
   border-color: var(--nori-primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--nori-glow) 22%, transparent);
@@ -405,7 +412,8 @@
 }
 
 .nori-input-inline:focus {
-  outline: none;
+  outline: 2px solid var(--nori-primary);
+  outline-offset: 2px;
   border-color: var(--nori-primary);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--nori-glow) 20%, transparent);
 }

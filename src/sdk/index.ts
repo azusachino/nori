@@ -219,26 +219,167 @@ export class NoriApiError extends Error {
   }
 }
 
+/** The sidecar did not answer: network failure, timeout, or a gateway reporting it down. */
+export class NoriNetworkError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'NoriNetworkError'
+  }
+}
+
 export type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+export type ConnectionState = 'checking' | 'online' | 'offline'
+
+/** Timeout for ordinary sidecar calls. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
+/** Timeout for calls that wait on the LLM; the sidecar gives its provider 90 s, so wait a little longer. */
+export const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 100_000
 
 export type NoriClientOptions = {
   baseUrl?: string
   fetchFn?: FetchFn
+  timeoutMs?: number
+  llmTimeoutMs?: number
+  /** First retry delay while offline; doubles on each failure up to retryMaxMs. */
+  retryBaseMs?: number
+  retryMaxMs?: number
 }
 
+type RequestOptions = RequestInit & { timeoutMs?: number }
+
+const GATEWAY_STATUSES = new Set([502, 503, 504])
+
+function withCallerSignal<T>(shared: Promise<T>, signal?: AbortSignal | null): Promise<T> {
+  if (!signal) return shared
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
+    shared.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      },
+    )
+  })
+}
+
+/**
+ * Client for the Nori sidecar. Every request has a timeout; identical GETs in
+ * flight share one round-trip; and the client tracks whether the sidecar is
+ * answering, retrying with backoff while it is not. Use getSharedNoriClient so
+ * every island on a page shares one client.
+ */
 export class NoriClient {
   private readonly baseUrl: string
   private readonly fetchFn: FetchFn
+  private readonly timeoutMs: number
+  private readonly llmTimeoutMs: number
+  private readonly retryBaseMs: number
+  private readonly retryMaxMs: number
+  private state: ConnectionState = 'checking'
+  private readonly listeners = new Set<(state: ConnectionState) => void>()
+  private readonly inflight = new Map<string, Promise<unknown>>()
+  private healthStatus: HealthStatus | null = null
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private retryDelayMs: number
 
   constructor(options: NoriClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? '/api/nori/v1').replace(/\/+$/, '')
     this.fetchFn = options.fetchFn ?? ((input, init) => fetch(input, init))
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+    this.llmTimeoutMs = options.llmTimeoutMs ?? DEFAULT_LLM_REQUEST_TIMEOUT_MS
+    this.retryBaseMs = options.retryBaseMs ?? 1_000
+    this.retryMaxMs = options.retryMaxMs ?? 30_000
+    this.retryDelayMs = this.retryBaseMs
   }
 
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await this.fetchFn(`${this.baseUrl}${path}`, init)
-    const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+  get connectionState(): ConnectionState {
+    return this.state
+  }
+
+  /** Subscribe to connection state changes; returns an unsubscribe function. */
+  subscribe = (listener: (state: ConnectionState) => void): (() => void) => {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  /** Stop the offline retry loop and drop listeners. */
+  dispose(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer)
+    this.retryTimer = null
+    this.listeners.clear()
+  }
+
+  private setState(next: ConnectionState): void {
+    if (next === this.state) return
+    this.state = next
+    if (next === 'online') {
+      if (this.retryTimer) clearTimeout(this.retryTimer)
+      this.retryTimer = null
+      this.retryDelayMs = this.retryBaseMs
+    } else if (next === 'offline') {
+      this.healthStatus = null
+      this.scheduleRetry()
+    }
+    for (const listener of [...this.listeners]) listener(next)
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryTimer) return
+    const delay = this.retryDelayMs
+    this.retryDelayMs = Math.min(this.retryDelayMs * 2, this.retryMaxMs)
+    this.retryTimer = setTimeout(async () => {
+      this.retryTimer = null
+      await this.health().catch(() => undefined)
+      if (this.state === 'offline') this.scheduleRetry()
+    }, delay)
+  }
+
+  private request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+    const method = (init.method ?? 'GET').toUpperCase()
+    if (method !== 'GET') return this.send<T>(path, init)
+    // Identical GETs share one round-trip; each caller can still cancel its own wait.
+    let shared = this.inflight.get(path) as Promise<T> | undefined
+    if (!shared) {
+      shared = this.send<T>(path, { ...init, signal: undefined }).finally(() => this.inflight.delete(path))
+      this.inflight.set(path, shared)
+    }
+    return withCallerSignal(shared, init.signal)
+  }
+
+  private async send<T>(path: string, init: RequestOptions): Promise<T> {
+    const { timeoutMs = this.timeoutMs, signal: callerSignal, ...rest } = init
+    const timeout = AbortSignal.timeout(timeoutMs)
+    const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout
+    let response: Response
+    let data: Record<string, unknown>
+    try {
+      response = await this.fetchFn(`${this.baseUrl}${path}`, { ...rest, signal })
+      data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+    } catch (err) {
+      if (callerSignal?.aborted) throw err
+      this.setState('offline')
+      throw new NoriNetworkError(
+        timeout.aborted
+          ? `The Nori sidecar did not respond within ${Math.round(timeoutMs / 1000)} s.`
+          : 'The Nori sidecar is unreachable.',
+        { cause: err },
+      )
+    }
     if (!response.ok) {
+      if (GATEWAY_STATUSES.has(response.status) && typeof data.error !== 'string') {
+        this.setState('offline')
+        throw new NoriNetworkError(`The Nori sidecar is unreachable (${response.status}).`)
+      }
+      this.setState('online')
       const message = typeof data.error === 'string' ? data.error : `Request failed (${response.status})`
       throw new NoriApiError(
         message,
@@ -247,11 +388,15 @@ export class NoriClient {
         data.assessment as AssessmentDetail | undefined,
       )
     }
+    this.setState('online')
     return data as T
   }
 
   async health(signal?: AbortSignal): Promise<HealthStatus> {
-    return this.request<HealthStatus>('/health', { method: 'GET', signal })
+    if (this.healthStatus && this.state === 'online') return this.healthStatus
+    const status = await this.request<HealthStatus>('/health', { method: 'GET', signal })
+    this.healthStatus = status
+    return status
   }
 
   async listPractice(
@@ -278,6 +423,7 @@ export class NoriClient {
     const body = expectedVersion === undefined ? {} : { expectedVersion }
     const data = await this.request<{ attempt: PracticeAttempt }>(`/practice/attempts/${encodeURIComponent(attemptId)}/feedback`, {
       method: 'POST',
+      timeoutMs: this.llmTimeoutMs,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal,
@@ -359,6 +505,7 @@ export class NoriClient {
     const body = expectedVersion === undefined ? { itemId } : { itemId, expectedVersion }
     const data = await this.request<{ assessment: AssessmentDetail }>(`/assessments/${encodeURIComponent(assessmentId)}/feedback`, {
       method: 'POST',
+      timeoutMs: this.llmTimeoutMs,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal,
@@ -394,6 +541,7 @@ export class NoriClient {
   ): Promise<{ courseKey: string; lessonKey: string; revision: number; context: TutorContextMeta; turns: TutorTurn[] }> {
     return this.request('/tutor', {
       method: 'POST',
+      timeoutMs: this.llmTimeoutMs,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
       signal,
@@ -420,6 +568,37 @@ export class NoriClient {
     const qs = query.toString()
     return this.request(`/digest${qs ? `?${qs}` : ''}`, { method: 'GET', signal })
   }
+}
+
+const sharedClients = new Map<string, NoriClient>()
+
+/** One client per sidecar base URL for the whole page, so islands share connection state and in-flight requests. */
+export function getSharedNoriClient(baseUrl = '/api/nori/v1'): NoriClient {
+  const key = baseUrl.replace(/\/+$/, '')
+  let client = sharedClients.get(key)
+  if (!client) {
+    client = new NoriClient({ baseUrl: key })
+    sharedClients.set(key, client)
+  }
+  return client
+}
+
+/** Detail of the `nori:practice-updated` window event; `attempts` carries the new or changed attempts. */
+export type PracticeUpdatedDetail = {
+  courseKey: string
+  lessonKey: string
+  attempts?: PracticeAttempt[]
+}
+
+/** Insert or replace attempts by id, keeping existing order. */
+export function mergeAttempts(prev: PracticeAttempt[], incoming: PracticeAttempt[]): PracticeAttempt[] {
+  const next = [...prev]
+  for (const attempt of incoming) {
+    const idx = next.findIndex((item) => item.id === attempt.id)
+    if (idx === -1) next.push(attempt)
+    else next[idx] = attempt
+  }
+  return next
 }
 
 export function isDeterministicExercise(type: SidecarExerciseType): boolean {
@@ -537,6 +716,70 @@ export function removeLocalDraft(courseKey: string, lessonKey: string, exerciseK
     // Ignore storage quota or private-mode errors
   }
   return next
+}
+
+export type ResendDraftsResult = {
+  sent: PracticeAttempt[]
+  /** Server rejections by exercise key; those drafts stay stored. */
+  failed: Record<string, string>
+  /** Drafts still stored after the run. */
+  drafts: Record<string, LocalDraft>
+}
+
+const resendsInFlight = new Map<string, Promise<ResendDraftsResult>>()
+
+/**
+ * Send stored offline drafts for one lesson to the sidecar, removing each one
+ * the sidecar records. Stops at the first network failure (the client goes
+ * offline and will retry). Concurrent calls for the same lesson share one run,
+ * so a draft is never sent twice.
+ */
+export function resendLocalDrafts(input: {
+  client: NoriClient
+  courseKey: string
+  lessonKey?: string
+  exercises: PracticeExercise[]
+}): Promise<ResendDraftsResult> {
+  const lessonKey = input.lessonKey ?? ''
+  const key = draftStorageKey(input.courseKey, lessonKey)
+  const running = resendsInFlight.get(key)
+  if (running) return running
+  const run = (async (): Promise<ResendDraftsResult> => {
+    const sent: PracticeAttempt[] = []
+    const failed: Record<string, string> = {}
+    for (const draft of Object.values(loadLocalDrafts(input.courseKey, lessonKey))) {
+      const exercise = input.exercises.find((ex) => ex.key === draft.exerciseKey)
+      if (!exercise) continue
+      const exerciseSnapshot: ExerciseSnapshot = {
+        type: exercise.type,
+        prompt: exercise.prompt,
+        options: exercise.options,
+        answer: exercise.answer,
+        explanation: exercise.explanation,
+      }
+      try {
+        const attempt = await input.client.createAttempt({
+          courseKey: input.courseKey,
+          lessonKey,
+          exerciseKey: exercise.key,
+          contentHash: await computeContentHash(exerciseSnapshot),
+          exerciseSnapshot,
+          answer: draft.answer,
+        })
+        sent.push(attempt)
+        removeLocalDraft(input.courseKey, lessonKey, draft.exerciseKey)
+      } catch (err) {
+        if (err instanceof NoriApiError) {
+          failed[draft.exerciseKey] = err.message
+          continue
+        }
+        break
+      }
+    }
+    return { sent, failed, drafts: loadLocalDrafts(input.courseKey, lessonKey) }
+  })().finally(() => resendsInFlight.delete(key))
+  resendsInFlight.set(key, run)
+  return run
 }
 
 export function formatAttemptsAsMarkdown(input: {
