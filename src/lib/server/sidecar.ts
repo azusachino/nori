@@ -395,6 +395,9 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
         if (prior.courseKey !== courseKey || prior.lessonKey !== lessonKey || prior.exerciseKey !== exerciseKey) {
           return Response.json({ error: 'This attempt id belongs to another exercise.' }, { status: 409 })
         }
+        if (prior.answer !== storedAnswer) {
+          return Response.json({ error: 'This attempt id was already used for a different answer.' }, { status: 409 })
+        }
         return Response.json({ attempt: toPracticeAttempt(prior) }, { status: 200 })
       }
       const ts = now()

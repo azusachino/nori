@@ -258,7 +258,8 @@ export function NoriPractice({
       setDrafts(removeLocalDraft(courseKey, lessonKey, exercise.key, attemptId))
       notifyPracticeUpdated(courseKey, lessonKey, [created])
     } catch (err) {
-      if (err instanceof NoriApiError) {
+      // A 4xx is the sidecar refusing this answer; anything else may be transient, so keep a draft.
+      if (err instanceof NoriApiError && err.status < 500) {
         setErrorByKey((prev) => ({ ...prev, [exercise.key]: err.message }))
       } else {
         // The sidecar may have recorded it before the connection failed; keep the
@@ -746,6 +747,7 @@ export function NoriPractice({
                             data-ui="nori"
                             className="nori-input-inline"
                             placeholder="Record correction or takeaway…"
+                            aria-label="Correction or takeaway note"
                             value={noteValue}
                             onChange={(e) => setNoteInputs((prev) => ({ ...prev, [attempt.id]: e.target.value }))}
                           />

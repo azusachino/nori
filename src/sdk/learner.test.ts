@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDatabase } from '../lib/server/database'
 import { createSidecarApi } from '../lib/server/sidecar'
-import { AssessmentAnswerSync, createCountdown, formatCountdown, localDeadline, openAssessment } from './assessment-sync'
+import { AssessmentAnswerSync, createCountdown, formatCountdown, localDeadline, MAX_ANSWER_CHARS, openAssessment } from './assessment-sync'
 import {
   loadLocalDrafts,
   NoriClient,
@@ -248,24 +248,39 @@ describe('assessment auto-save and timer', () => {
     expect(formatCountdown(-5)).toBe('00:00')
   })
 
-  test('createCountdown ticks down to the deadline and expires once', async () => {
+  test('createCountdown wakes on second boundaries and expires exactly at the deadline', () => {
     let clock = 0
     const ticks: number[] = []
-    let expired = 0
-    const stop = createCountdown({
-      deadline: 3_000,
+    const delays: number[] = []
+    let expiredAt = null as number | null
+    let pending: (() => void) | null = null
+    createCountdown({
+      deadline: 2_500,
       now: () => clock,
-      intervalMs: 5,
-      onTick: (ms) => {
-        ticks.push(ms)
-        clock += 1_000
+      schedule: (fn, ms) => {
+        delays.push(ms)
+        pending = () => {
+          clock += ms
+          fn()
+        }
+        return () => {
+          pending = null
+        }
       },
-      onExpire: () => expired++,
+      onTick: (ms) => ticks.push(ms),
+      onExpire: () => {
+        expiredAt = clock
+      },
     })
-    await sleep(60)
-    stop()
-    expect(ticks).toEqual([3_000, 2_000, 1_000, 0])
-    expect(expired).toBe(1)
+    while (pending) {
+      const run: () => void = pending
+      pending = null
+      run()
+    }
+    expect(delays).toEqual([500, 1_000, 1_000])
+    expect(ticks).toEqual([2_500, 2_000, 1_000, 0])
+    expect(ticks.map(formatCountdown)).toEqual(['00:03', '00:02', '00:01', '00:00'])
+    expect(expiredAt).toBe(2_500)
   })
 })
 
@@ -474,5 +489,166 @@ describe('assessment open, submit and unload', () => {
     expect(keepalive).toEqual([true])
     expect((await client.getAssessment(created.id)).items[0]!.answer).toBe('Leaving now')
     sync.dispose()
+  })
+})
+
+describe('second review fixes', () => {
+  async function startQuiz(client: NoriClient, durationSeconds?: number) {
+    const created = await client.createAssessment({
+      courseKey: COURSE,
+      title: 'Quiz',
+      mode: durationSeconds ? 'timed' : 'untimed',
+      durationSeconds,
+      items: [
+        { exerciseKey: 'w1', exerciseSnapshot: written },
+        { exerciseKey: 'w2', exerciseSnapshot: written },
+        { exerciseKey: 'w3', exerciseSnapshot: written },
+      ],
+    })
+    return client.startAssessment(created.id)
+  }
+
+  test('one over-limit answer does not block saving the others, and submit names it', async () => {
+    const client = makeClient({ fetchFn: sidecarFetch() })
+    const started = await startQuiz(client)
+    const [i1, i2, i3] = started.items
+    const states: Record<string, string>[] = []
+    let errors: Record<string, string> = {}
+    const sync = new AssessmentAnswerSync({
+      client,
+      assessment: started,
+      debounceMs: 60_000,
+      onStateChange: (s, e) => {
+        states.push(s)
+        errors = e
+      },
+    })
+    sync.setAnswer(i1!.id, 'x'.repeat(MAX_ANSWER_CHARS + 1))
+    sync.setAnswer(i2!.id, 'Second')
+    sync.setAnswer(i3!.id, 'Third')
+
+    await sync.flush()
+    expect(states.at(-1)).toEqual({ [i1!.id]: 'rejected', [i2!.id]: 'saved', [i3!.id]: 'saved' })
+    expect(errors[i1!.id]).toContain('20,000')
+    const saved = await client.getAssessment(started.id)
+    expect(saved.items.map((i) => i.answer)).toEqual([null, 'Second', 'Third'])
+
+    const refused = await sync.submit().catch((e) => e)
+    expect(String(refused.message)).toContain('#1')
+    expect((await client.getAssessment(started.id)).status).toBe('active')
+
+    // Fixing the answer clears the rejection and submit goes through.
+    sync.setAnswer(i1!.id, 'First')
+    const finalized = await sync.submit()
+    expect(finalized.items.map((i) => i.answer)).toEqual(['First', 'Second', 'Third'])
+    sync.dispose()
+  })
+
+  test('valid answers are on the server when a timed assessment expires despite a rejected one', async () => {
+    let serverNow = 1_000_000
+    const client = makeClient({ fetchFn: sidecarFetch(() => serverNow) })
+    const started = await startQuiz(client, 60)
+    const [i1, i2, i3] = started.items
+    const sync = new AssessmentAnswerSync({ client, assessment: started, debounceMs: 60_000 })
+    sync.setAnswer(i1!.id, 'x'.repeat(MAX_ANSWER_CHARS + 1))
+    sync.setAnswer(i2!.id, 'Second')
+    sync.setAnswer(i3!.id, 'Third')
+    await sync.flush()
+    serverNow += 61_000
+    const expired = await client.getAssessment(started.id)
+    expect(expired.status).toBe('expired')
+    expect(expired.items.map((i) => i.answer)).toEqual([null, 'Second', 'Third'])
+    sync.dispose()
+  })
+
+  test('pagehide flush sends the smallest answers within the keepalive budget', async () => {
+    const real = sidecarFetch()
+    const sentBytes: number[] = []
+    const client = makeClient({
+      fetchFn: (input, init) => {
+        if (init?.keepalive) sentBytes.push(new TextEncoder().encode(String(init.body)).length)
+        return real(input, init)
+      },
+    })
+    const created = await client.createAssessment({
+      courseKey: COURSE,
+      title: 'Long',
+      mode: 'untimed',
+      items: [1, 2, 3, 4].map((n) => ({ exerciseKey: `w${n}`, exerciseSnapshot: written })),
+    })
+    const started = await client.startAssessment(created.id)
+    const sync = new AssessmentAnswerSync({ client, assessment: started, debounceMs: 60_000 })
+    started.items.forEach((item, n) => sync.setAnswer(item.id, 'y'.repeat(19_000 + n)))
+    sync.flushOnPageHide()
+    await sleep(30)
+    expect(sentBytes).toHaveLength(3)
+    expect(sentBytes.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(60_000)
+    const answers = (await client.getAssessment(created.id)).items.map((i) => i.answer?.length ?? null)
+    expect(answers).toEqual([19_000, 19_001, 19_002, null])
+    expect(sync.hasUnsaved).toBe(true)
+    sync.dispose()
+  })
+
+  test('a disposed sync makes no more callbacks', async () => {
+    const client = makeClient({ fetchFn: sidecarFetch() })
+    const started = await startQuiz(client)
+    let calls = 0
+    const sync = new AssessmentAnswerSync({
+      client,
+      assessment: started,
+      debounceMs: 60_000,
+      onUpdate: () => calls++,
+      onStateChange: () => calls++,
+    })
+    sync.setAnswer(started.items[0]!.id, 'Late')
+    const before = calls
+    const flushing = sync.flush()
+    sync.dispose()
+    await flushing
+    expect(calls).toBe(before)
+    expect((await client.getAssessment(started.id)).items[0]!.answer).toBe('Late')
+  })
+
+  test('a non-JSON 404 from in front of the sidecar counts as unreachable', async () => {
+    const client = makeClient({
+      fetchFn: async () => new Response('Not Found', { status: 404 }),
+      retryBaseMs: 60_000,
+    })
+    await expect(client.createAttempt({ courseKey: COURSE, exerciseKey: 'q', exerciseSnapshot: written, answer: 'x' })).rejects.toBeInstanceOf(
+      NoriNetworkError,
+    )
+    expect(client.connectionState).toBe('offline')
+  })
+
+  test('the same attempt id with a different answer is rejected', async () => {
+    const client = makeClient({ fetchFn: sidecarFetch() })
+    const id = crypto.randomUUID()
+    const base = { id, courseKey: COURSE, lessonKey: 'l', exerciseKey: 'q2', exerciseSnapshot: written }
+    await client.createAttempt({ ...base, answer: 'One' })
+    const err = await client.createAttempt({ ...base, answer: 'Two' }).catch((e) => e)
+    expect(err.status).toBe(409)
+  })
+
+  test('every legacy draft has a stored id before the first draft is sent', async () => {
+    const real = sidecarFetch()
+    const idsAtFirstSend: (string | undefined)[] = []
+    const client = makeClient({
+      fetchFn: (input, init) => {
+        if (isCreate(input, init) && !idsAtFirstSend.length) {
+          idsAtFirstSend.push(...Object.values(loadLocalDrafts(COURSE, 'l')).map((d) => d.attemptId))
+        }
+        return real(input, init)
+      },
+    })
+    saveLocalDraft(COURSE, 'l', { exerciseKey: 'a', answer: 'One', updatedAt: 1 })
+    saveLocalDraft(COURSE, 'l', { exerciseKey: 'b', answer: 'Two', updatedAt: 2 })
+    const exercises: PracticeExercise[] = [
+      { key: 'a', ...written },
+      { key: 'b', ...written },
+    ]
+    const result = await resendLocalDrafts({ client, courseKey: COURSE, lessonKey: 'l', exercises })
+    expect(idsAtFirstSend).toHaveLength(2)
+    expect(idsAtFirstSend.every((id) => typeof id === 'string')).toBe(true)
+    expect(result.sent).toHaveLength(2)
   })
 })

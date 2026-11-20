@@ -252,7 +252,6 @@ export type NoriClientOptions = {
 
 type RequestOptions = RequestInit & { timeoutMs?: number }
 
-const GATEWAY_STATUSES = new Set([502, 503, 504])
 
 /** How long a health result (llmConfigured) is reused before asking again. */
 const HEALTH_TTL_MS = 60_000
@@ -400,7 +399,9 @@ export class NoriClient {
     }
     const data = parsed ?? {}
     if (!response.ok) {
-      if (GATEWAY_STATUSES.has(response.status) && typeof data.error !== 'string') {
+      // The sidecar always answers errors with { error }. A 404+ without it came from
+      // something in front of the sidecar (a proxy, a static host), so it is unreachable.
+      if (response.status >= 404 && typeof data.error !== 'string') {
         this.setState('offline')
         throw new NoriNetworkError(`The Nori sidecar is unreachable (${response.status}).`)
       }
@@ -786,12 +787,16 @@ export function resendLocalDrafts(input: {
   const run = (async (): Promise<ResendDraftsResult> => {
     const sent: PracticeAttempt[] = []
     const failed: Record<string, string> = {}
+    // Give every id-less (older) draft an id and store them all before sending
+    // anything, then re-read: if another tab stored ids first, those win.
     for (const stored of Object.values(loadLocalDrafts(input.courseKey, lessonKey))) {
-      const exercise = input.exercises.find((ex) => ex.key === stored.exerciseKey)
-      if (!exercise) continue
-      // Reserve the id before sending, so a lost response or another tab re-sends the same attempt.
-      const draft = stored.attemptId ? stored : { ...stored, attemptId: crypto.randomUUID() }
-      if (draft !== stored) saveLocalDraft(input.courseKey, lessonKey, draft)
+      if (stored.attemptId) continue
+      const latest = loadLocalDrafts(input.courseKey, lessonKey)[stored.exerciseKey]
+      if (latest && !latest.attemptId) saveLocalDraft(input.courseKey, lessonKey, { ...latest, attemptId: crypto.randomUUID() })
+    }
+    for (const draft of Object.values(loadLocalDrafts(input.courseKey, lessonKey))) {
+      const exercise = input.exercises.find((ex) => ex.key === draft.exerciseKey)
+      if (!exercise || !draft.attemptId) continue
       const exerciseSnapshot: ExerciseSnapshot = {
         type: exercise.type,
         prompt: exercise.prompt,

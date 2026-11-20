@@ -337,8 +337,11 @@ export async function handleSidecarActivities(
     if (expectedVersion === null) return Response.json({ error: 'expectedVersion must be a non-negative integer.' }, { status: 400 })
 
     if (action === 'answers') {
-      if (typeof body.itemId !== 'string' || typeof body.answer !== 'string' || body.answer.length > 20000) {
+      if (typeof body.itemId !== 'string' || typeof body.answer !== 'string') {
         return Response.json({ error: 'Provide itemId and answer.' }, { status: 400 })
+      }
+      if (body.answer.length > 20000) {
+        return Response.json({ error: 'Answers are limited to 20,000 characters.' }, { status: 400 })
       }
       const itemId = body.itemId
       const rawAnswer = body.answer

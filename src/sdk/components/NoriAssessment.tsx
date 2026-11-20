@@ -4,6 +4,7 @@ import {
   createCountdown,
   formatCountdown,
   localDeadline,
+  MAX_ANSWER_CHARS,
   openAssessment,
   type AnswerSaveState,
 } from '../assessment-sync'
@@ -50,8 +51,12 @@ const SAVE_STATE_LABEL: Record<AnswerSaveState, string> = {
   pending: 'Unsaved changes',
   saving: 'Saving…',
   saved: 'Saved',
-  error: 'Not saved',
+  error: 'Not saved yet · will retry when the sidecar answers',
+  rejected: 'Not saved',
 }
+
+/** Show the character count once an answer is this close to the server limit. */
+const COUNT_FROM_CHARS = Math.floor(MAX_ANSWER_CHARS * 0.9)
 
 export function NoriAssessment({
   courseKey,
@@ -71,6 +76,7 @@ export function NoriAssessment({
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [saveStates, setSaveStates] = useState<Record<string, AnswerSaveState>>({})
+  const [saveErrors, setSaveErrors] = useState<Record<string, string>>({})
   const [deadline, setDeadline] = useState<number | null>(null)
   const [remainingMs, setRemainingMs] = useState<number | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -96,11 +102,15 @@ export function NoriAssessment({
     return () => controller.abort()
   }, [bank, inlineExercises])
 
-  // Only pass a detail received just now: its remainingMs is anchored to the moment of receipt.
-  const syncAssessment = useCallback((detail: AssessmentDetail, deadlineAt = localDeadline(detail)) => {
+  // Pass deadlineAt when the detail was fetched to (re)start the countdown; it is
+  // anchored at send time. Other updates for the open assessment keep its deadline.
+  const syncAssessment = useCallback((detail: AssessmentDetail, deadlineAt?: number | null) => {
+    const sameAssessment = openIdRef.current === detail.id
     openIdRef.current = detail.id
     setActive(detail)
-    setDeadline(deadlineAt)
+    if (detail.status !== 'active') setDeadline(null)
+    else if (deadlineAt !== undefined) setDeadline(deadlineAt)
+    else if (!sameAssessment) setDeadline(localDeadline(detail))
     setAssessments((prev) => [detail, ...prev.filter((a) => a.id !== detail.id)])
     const nextAnswers: Record<string, string> = {}
     for (const item of detail.items) {
@@ -186,10 +196,14 @@ export function NoriAssessment({
       onUpdate: (detail) => {
         if (openIdRef.current === detail.id) syncAssessment(detail)
       },
-      onStateChange: setSaveStates,
+      onStateChange: (states, errors) => {
+        setSaveStates(states)
+        setSaveErrors(errors)
+      },
     })
     syncRef.current = sync
     setSaveStates({})
+    setSaveErrors({})
     return () => {
       sync.flush().catch(() => undefined)
       sync.dispose()
@@ -239,9 +253,10 @@ export function NoriAssessment({
           exerciseSnapshot: { type: ex.type, prompt: ex.prompt, options: ex.options, answer: ex.answer, explanation: ex.explanation },
         })),
       })
+      const sentAt = Date.now()
       const started = await client.startAssessment(created.id)
       setAnswers({})
-      syncAssessment(started)
+      syncAssessment(started, localDeadline(started, sentAt))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not start assessment.')
     } finally {
@@ -279,9 +294,9 @@ export function NoriAssessment({
     setError(null)
     try {
       const updated = await client.requestAssessmentFeedback(active.id, itemId, active.version)
-      syncAssessment(updated)
+      if (openIdRef.current === updated.id) syncAssessment(updated)
     } catch (e) {
-      if (e instanceof NoriApiError && e.assessment) syncAssessment(e.assessment)
+      if (e instanceof NoriApiError && e.assessment && openIdRef.current === e.assessment.id) syncAssessment(e.assessment)
       setError(e instanceof Error ? e.message : 'Feedback failed.')
     } finally {
       setBusy(null)
@@ -294,9 +309,9 @@ export function NoriAssessment({
     setError(null)
     try {
       const updated = await client.saveAssessmentCorrection(active.id, itemId, notes[itemId] ?? '', active.version)
-      syncAssessment(updated)
+      if (openIdRef.current === updated.id) syncAssessment(updated)
     } catch (e) {
-      if (e instanceof NoriApiError && e.assessment) syncAssessment(e.assessment)
+      if (e instanceof NoriApiError && e.assessment && openIdRef.current === e.assessment.id) syncAssessment(e.assessment)
       setError(e instanceof Error ? e.message : 'Could not save correction.')
     } finally {
       setBusy(null)
@@ -342,6 +357,7 @@ export function NoriAssessment({
               <input
                 type="number"
                 data-ui="nori"
+                aria-label="Time limit in minutes"
                 className="nori-input-inline"
                 min={1}
                 max={480}
@@ -486,14 +502,25 @@ export function NoriAssessment({
                         data-ui="nori"
                         className={`nori-textarea${item.type === 'code' ? ' nori-textarea--code' : ''}`}
                         value={answers[item.id] ?? ''}
+                        maxLength={MAX_ANSWER_CHARS}
                         readOnly={timeUp}
                         onChange={(e) => handleAnswerChange(item.id, e.target.value)}
                         onBlur={handleAnswerBlur}
                       />
                     )}
+                    {item.type !== 'multiple_choice' && (answers[item.id]?.length ?? 0) >= COUNT_FROM_CHARS && (
+                      <p className="nori-muted" data-nori-char-count>
+                        {(answers[item.id]?.length ?? 0).toLocaleString()} / {MAX_ANSWER_CHARS.toLocaleString()} characters
+                      </p>
+                    )}
                     {saveStates[item.id] && (
-                      <p className="nori-muted" data-nori-save-state={saveStates[item.id]} aria-live="polite">
+                      <p
+                        className={saveStates[item.id] === 'rejected' ? 'nori-error' : 'nori-muted'}
+                        data-nori-save-state={saveStates[item.id]}
+                        aria-live="polite"
+                      >
                         {SAVE_STATE_LABEL[saveStates[item.id]!]}
+                        {saveStates[item.id] === 'rejected' && saveErrors[item.id] ? `: ${saveErrors[item.id]}` : ''}
                       </p>
                     )}
                   </>
@@ -549,6 +576,7 @@ export function NoriAssessment({
                         data-ui="nori"
                         className="nori-input-inline"
                         placeholder="Correction note…"
+                        aria-label={`Correction note for item ${idx + 1}`}
                         value={notes[item.id] ?? item.result?.ownerNote ?? ''}
                         onChange={(e) => setNotes((prev) => ({ ...prev, [item.id]: e.target.value }))}
                       />
