@@ -4,6 +4,8 @@
 
 - **Assessments auto-save and count down.** `<NoriAssessment />` saves each answer automatically (debounced, flushed on blur and before submit) with a per-item saved/saving indicator, so submit grades every answer. Timed assessments tick each second as `mm:ss` from the server deadline and lock at expiry, when the sidecar finalizes them as `expired`.
 - **Client timeouts, shared connection and offline recovery.** `NoriClient` times out each request (10 s; 100 s for LLM-backed feedback and tutor calls), dedupes identical in-flight GETs, tracks connection state, and retries with backoff while offline. Islands share one client per page via `getSharedNoriClient`, treat a successful data call as the health check, and `<NoriPractice />` re-sends unsent local drafts (`resendLocalDrafts`) when the sidecar answers again.
+- **Idempotent attempts.** `POST /v1/practice/attempts` accepts an optional client-generated `id`; repeating it returns the stored attempt instead of inserting another. `<NoriPractice />` reserves the id before sending and keeps it on any unsent draft, so a lost response, a retry or a second tab records each attempt once.
+- **Sidecar idle timeout.** `Bun.serve` now sets `idleTimeout: 120` so LLM-backed calls (up to 90 s) are not cut off by Bun's 10 s default.
 - **Honest code-check labels and accessibility.** Code checks that do not run the code (Python and other non-JS references) are labelled "Heuristic check, not executed" (`CodeVerificationResult.executed`). Exercise option groups and inputs are labelled by the rendered prompt instead of raw Markdown, and text inputs and keyed options show a visible focus outline.
 
 ## 0.1.0

@@ -55,6 +55,8 @@ export type HealthStatus = {
 }
 
 export type CreateAttemptInput = {
+  /** Client-generated UUID; repeating a create with the same id returns the stored attempt. */
+  id?: string
   courseKey: string
   lessonKey?: string
   exerciseKey: string
@@ -65,6 +67,8 @@ export type CreateAttemptInput = {
 
 export type LocalDraft = {
   exerciseKey: string
+  /** Attempt id reserved for this draft, so re-sending it never records it twice. */
+  attemptId?: string
   answer: string
   updatedAt: number
   correct?: number | null
@@ -250,6 +254,18 @@ type RequestOptions = RequestInit & { timeoutMs?: number }
 
 const GATEWAY_STATUSES = new Set([502, 503, 504])
 
+/** How long a health result (llmConfigured) is reused before asking again. */
+const HEALTH_TTL_MS = 60_000
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(text) as unknown
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
 function withCallerSignal<T>(shared: Promise<T>, signal?: AbortSignal | null): Promise<T> {
   if (!signal) return shared
   if (signal.aborted) return Promise.reject(signal.reason)
@@ -286,6 +302,7 @@ export class NoriClient {
   private readonly listeners = new Set<(state: ConnectionState) => void>()
   private readonly inflight = new Map<string, Promise<unknown>>()
   private healthStatus: HealthStatus | null = null
+  private healthCheckedAt = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private retryDelayMs: number
 
@@ -360,10 +377,11 @@ export class NoriClient {
     const timeout = AbortSignal.timeout(timeoutMs)
     const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout
     let response: Response
-    let data: Record<string, unknown>
+    let text: string
     try {
       response = await this.fetchFn(`${this.baseUrl}${path}`, { ...rest, signal })
-      data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+      // Reading the body stays under the timeout, so a stalled body ends as a network error.
+      text = await response.text()
     } catch (err) {
       if (callerSignal?.aborted) throw err
       this.setState('offline')
@@ -374,6 +392,13 @@ export class NoriClient {
         { cause: err },
       )
     }
+    const parsed = parseJsonObject(text)
+    if (response.ok && parsed === null) {
+      // Something other than the sidecar answered (an HTML fallback page, a truncated body).
+      this.setState('offline')
+      throw new NoriNetworkError(`The Nori sidecar returned an invalid response (${response.status}).`)
+    }
+    const data = parsed ?? {}
     if (!response.ok) {
       if (GATEWAY_STATUSES.has(response.status) && typeof data.error !== 'string') {
         this.setState('offline')
@@ -393,9 +418,12 @@ export class NoriClient {
   }
 
   async health(signal?: AbortSignal): Promise<HealthStatus> {
-    if (this.healthStatus && this.state === 'online') return this.healthStatus
+    if (this.healthStatus && this.state === 'online' && Date.now() - this.healthCheckedAt < HEALTH_TTL_MS) {
+      return this.healthStatus
+    }
     const status = await this.request<HealthStatus>('/health', { method: 'GET', signal })
     this.healthStatus = status
+    this.healthCheckedAt = Date.now()
     return status
   }
 
@@ -479,6 +507,8 @@ export class NoriClient {
     answer: string,
     expectedVersion?: number,
     signal?: AbortSignal,
+    /** keepalive lets the save finish while the page unloads. */
+    options: { keepalive?: boolean } = {},
   ): Promise<AssessmentDetail> {
     const body = expectedVersion === undefined ? { itemId, answer } : { itemId, answer, expectedVersion }
     const data = await this.request<{ assessment: AssessmentDetail }>(`/assessments/${encodeURIComponent(assessmentId)}/answers`, {
@@ -486,6 +516,7 @@ export class NoriClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal,
+      keepalive: options.keepalive,
     })
     return data.assessment
   }
@@ -705,8 +736,16 @@ export function saveLocalDraft(courseKey: string, lessonKey: string, draft: Loca
   return next
 }
 
-export function removeLocalDraft(courseKey: string, lessonKey: string, exerciseKey: string): Record<string, LocalDraft> {
+/** Remove a draft; with attemptId, only if the stored draft is still that attempt (not a newer one). */
+export function removeLocalDraft(
+  courseKey: string,
+  lessonKey: string,
+  exerciseKey: string,
+  attemptId?: string,
+): Record<string, LocalDraft> {
   const next = { ...loadLocalDrafts(courseKey, lessonKey) }
+  const stored = next[exerciseKey]
+  if (attemptId !== undefined && stored?.attemptId !== undefined && stored.attemptId !== attemptId) return next
   delete next[exerciseKey]
   try {
     if (typeof globalThis.localStorage !== 'undefined') {
@@ -747,9 +786,12 @@ export function resendLocalDrafts(input: {
   const run = (async (): Promise<ResendDraftsResult> => {
     const sent: PracticeAttempt[] = []
     const failed: Record<string, string> = {}
-    for (const draft of Object.values(loadLocalDrafts(input.courseKey, lessonKey))) {
-      const exercise = input.exercises.find((ex) => ex.key === draft.exerciseKey)
+    for (const stored of Object.values(loadLocalDrafts(input.courseKey, lessonKey))) {
+      const exercise = input.exercises.find((ex) => ex.key === stored.exerciseKey)
       if (!exercise) continue
+      // Reserve the id before sending, so a lost response or another tab re-sends the same attempt.
+      const draft = stored.attemptId ? stored : { ...stored, attemptId: crypto.randomUUID() }
+      if (draft !== stored) saveLocalDraft(input.courseKey, lessonKey, draft)
       const exerciseSnapshot: ExerciseSnapshot = {
         type: exercise.type,
         prompt: exercise.prompt,
@@ -759,6 +801,7 @@ export function resendLocalDrafts(input: {
       }
       try {
         const attempt = await input.client.createAttempt({
+          id: draft.attemptId,
           courseKey: input.courseKey,
           lessonKey,
           exerciseKey: exercise.key,
@@ -767,7 +810,7 @@ export function resendLocalDrafts(input: {
           answer: draft.answer,
         })
         sent.push(attempt)
-        removeLocalDraft(input.courseKey, lessonKey, draft.exerciseKey)
+        removeLocalDraft(input.courseKey, lessonKey, draft.exerciseKey, draft.attemptId)
       } catch (err) {
         if (err instanceof NoriApiError) {
           failed[draft.exerciseKey] = err.message

@@ -197,8 +197,10 @@ export function NoriPractice({
     }
   }
 
-  const submitAnswer = async (exercise: PracticeExercise, overrideAnswer?: string) => {
-    const answer = overrideAnswer ?? inputs[exercise.key] ?? ''
+  const submitAnswer = async (exercise: PracticeExercise, fromDraft?: LocalDraft) => {
+    const answer = fromDraft?.answer ?? inputs[exercise.key] ?? ''
+    // One id per attempt: a retry or re-sent draft with this id is recorded once.
+    const attemptId = fromDraft?.attemptId ?? crypto.randomUUID()
     const isValid =
       exercise.type === 'multiple_choice'
         ? exercise.options.includes(answer)
@@ -225,6 +227,7 @@ export function NoriPractice({
     if (connectionState !== 'online') {
       const localDraft: LocalDraft = {
         exerciseKey: exercise.key,
+        attemptId,
         answer,
         updatedAt: Date.now(),
         correct: deterministic ? (checkDeterministicExercise(exercise, answer) ? 1 : 0) : null,
@@ -237,6 +240,7 @@ export function NoriPractice({
     try {
       const contentHash = hashes[exercise.key] ?? (await computeContentHash(exercise))
       const created = await client.createAttempt({
+        id: attemptId,
         courseKey,
         lessonKey,
         exerciseKey: exercise.key,
@@ -251,14 +255,17 @@ export function NoriPractice({
         answer,
       })
       setAttempts((prev) => mergeAttempts(prev, [created]))
-      setDrafts(removeLocalDraft(courseKey, lessonKey, exercise.key))
+      setDrafts(removeLocalDraft(courseKey, lessonKey, exercise.key, attemptId))
       notifyPracticeUpdated(courseKey, lessonKey, [created])
     } catch (err) {
       if (err instanceof NoriApiError) {
         setErrorByKey((prev) => ({ ...prev, [exercise.key]: err.message }))
       } else {
+        // The sidecar may have recorded it before the connection failed; keep the
+        // same id so the re-send returns that attempt instead of adding another.
         const localDraft: LocalDraft = {
           exerciseKey: exercise.key,
+          attemptId,
           answer,
           updatedAt: Date.now(),
           correct: deterministic ? (checkDeterministicExercise(exercise, answer) ? 1 : 0) : null,
@@ -580,7 +587,7 @@ export function NoriPractice({
                   data-ui="nori"
                   className="nori-btn"
                   disabled={busyKey === `submit:${exercise.key}`}
-                  onClick={() => submitAnswer(exercise, localDraft.answer)}
+                  onClick={() => submitAnswer(exercise, localDraft)}
                 >
                   <IconSend />
                   <span>Submit saved draft to Nori</span>

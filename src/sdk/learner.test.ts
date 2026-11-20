@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDatabase } from '../lib/server/database'
 import { createSidecarApi } from '../lib/server/sidecar'
-import { AssessmentAnswerSync, createCountdown, formatCountdown } from './assessment-sync'
+import { AssessmentAnswerSync, createCountdown, formatCountdown, localDeadline, openAssessment } from './assessment-sync'
 import {
   loadLocalDrafts,
   NoriClient,
@@ -275,5 +275,204 @@ describe('code check labelling', () => {
     const result = await verifyCodeInBrowser('emb = torch.nn.Embedding(50257, 64)', ref)
     expect(result.executed).toBe(false)
     expect(result.summary).toContain('not executed')
+  })
+})
+
+const isCreate = (input: RequestInfo | URL, init?: RequestInit) =>
+  init?.method === 'POST' && String(input).endsWith('/practice/attempts')
+
+describe('idempotent attempt creation', () => {
+  test('a draft stored after a lost response is recorded once when re-sent', async () => {
+    const real = sidecarFetch()
+    let loseNext = true
+    const client = makeClient({
+      retryBaseMs: 60_000,
+      fetchFn: async (input, init) => {
+        if (isCreate(input, init) && loseNext) {
+          loseNext = false
+          await real(input, init) // the sidecar records it...
+          throw new TypeError('connection reset') // ...but the response never arrives
+        }
+        return real(input, init)
+      },
+    })
+    const exercise: PracticeExercise = { key: 'q1', ...mcq }
+    // What NoriPractice does: reserve an id, send, keep it on the draft after a network error.
+    const attemptId = crypto.randomUUID()
+    const lost = await client
+      .createAttempt({ id: attemptId, courseKey: COURSE, lessonKey: 'l', exerciseKey: 'q1', exerciseSnapshot: mcq, answer: 'A' })
+      .catch((e) => e)
+    expect(lost).toBeInstanceOf(NoriNetworkError)
+    saveLocalDraft(COURSE, 'l', { exerciseKey: 'q1', attemptId, answer: 'A', updatedAt: 1 })
+
+    const result = await resendLocalDrafts({ client, courseKey: COURSE, lessonKey: 'l', exercises: [exercise] })
+    expect(result.sent.map((a) => a.id)).toEqual([attemptId])
+    expect(result.drafts).toEqual({})
+    expect((await client.listPractice({ courseKey: COURSE, lessonKey: 'l' })).attempts).toHaveLength(1)
+  })
+
+  test('a legacy draft gets its id stored before sending, so a lost response does not duplicate it', async () => {
+    const real = sidecarFetch()
+    let loseNext = true
+    const client = makeClient({
+      retryBaseMs: 60_000,
+      fetchFn: async (input, init) => {
+        if (isCreate(input, init) && loseNext) {
+          loseNext = false
+          await real(input, init)
+          throw new TypeError('connection reset')
+        }
+        return real(input, init)
+      },
+    })
+    const exercises: PracticeExercise[] = [{ key: 'q2', ...written }]
+    saveLocalDraft(COURSE, 'l', { exerciseKey: 'q2', answer: 'My words', updatedAt: 1 })
+    const first = await resendLocalDrafts({ client, courseKey: COURSE, lessonKey: 'l', exercises })
+    expect(first.sent).toEqual([])
+    expect(first.drafts.q2?.attemptId).toBeString()
+    const second = await resendLocalDrafts({ client, courseKey: COURSE, lessonKey: 'l', exercises })
+    expect(second.sent.map((a) => a.id)).toEqual([first.drafts.q2!.attemptId!])
+    expect((await client.listPractice({ courseKey: COURSE, lessonKey: 'l' })).attempts).toHaveLength(1)
+  })
+
+  test('two clients (tabs) sending the same draft leave one attempt', async () => {
+    const real = sidecarFetch()
+    const tabA = makeClient({ fetchFn: real })
+    const tabB = makeClient({ fetchFn: real })
+    const input = { id: crypto.randomUUID(), courseKey: COURSE, lessonKey: 'l', exerciseKey: 'q2', exerciseSnapshot: written, answer: 'Same' }
+    const [a, b] = await Promise.all([tabA.createAttempt(input), tabB.createAttempt(input)])
+    expect(a.id).toBe(input.id)
+    expect(b).toEqual(a)
+    expect((await tabA.listPractice({ courseKey: COURSE, lessonKey: 'l' })).attempts).toHaveLength(1)
+  })
+
+  test('reusing an attempt id for another exercise is rejected', async () => {
+    const client = makeClient({ fetchFn: sidecarFetch() })
+    const id = crypto.randomUUID()
+    await client.createAttempt({ id, courseKey: COURSE, lessonKey: 'l', exerciseKey: 'q2', exerciseSnapshot: written, answer: 'x' })
+    const err = await client
+      .createAttempt({ id, courseKey: COURSE, lessonKey: 'l', exerciseKey: 'q9', exerciseSnapshot: written, answer: 'x' })
+      .catch((e) => e)
+    expect(err.status).toBe(409)
+  })
+})
+
+describe('response bodies and health', () => {
+  test('a 200 with a non-JSON body is an error, not an empty success', async () => {
+    const client = makeClient({
+      fetchFn: async () => new Response('<!doctype html><p>app shell</p>', { status: 200 }),
+      retryBaseMs: 60_000,
+    })
+    await expect(client.listPractice({ courseKey: COURSE })).rejects.toBeInstanceOf(NoriNetworkError)
+    expect(client.connectionState).toBe('offline')
+  })
+
+  test('a stalled body times out into the offline state', async () => {
+    const client = makeClient({
+      timeoutMs: 20,
+      retryBaseMs: 60_000,
+      fetchFn: async (_input, init) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"attempts":'))
+              init?.signal?.addEventListener('abort', () => controller.error(init.signal!.reason))
+            },
+          }),
+          { status: 200 },
+        ),
+    })
+    const err = await client.listPractice({ courseKey: COURSE }).catch((e) => e)
+    expect(err).toBeInstanceOf(NoriNetworkError)
+    expect(client.connectionState).toBe('offline')
+  })
+
+  test('the health result is refreshed after its TTL', async () => {
+    const real = sidecarFetch()
+    let healthCalls = 0
+    const client = makeClient({
+      fetchFn: (input, init) => {
+        if (String(input).endsWith('/health')) healthCalls++
+        return real(input, init)
+      },
+    })
+    try {
+      setSystemTime(new Date('2026-11-21T00:00:00Z'))
+      await client.health()
+      await client.health()
+      expect(healthCalls).toBe(1)
+      setSystemTime(new Date('2026-11-21T00:01:01Z'))
+      await client.health()
+      expect(healthCalls).toBe(2)
+    } finally {
+      setSystemTime()
+    }
+  })
+})
+
+describe('assessment open, submit and unload', () => {
+  test('opening an assessment from a stale list starts the countdown from fresh server time', async () => {
+    let serverNow = 1_000_000
+    const client = makeClient({ fetchFn: sidecarFetch(() => serverNow) })
+    const created = await client.createAssessment({
+      courseKey: COURSE,
+      title: 'Timed',
+      mode: 'timed',
+      durationSeconds: 60,
+      items: [{ exerciseKey: 'q1', exerciseSnapshot: mcq }],
+    })
+    await client.startAssessment(created.id)
+    const listed = (await client.listAssessments(COURSE)).assessments[0]!
+    expect(listed.remainingMs).toBe(60_000)
+
+    // The learner clicks the list entry 30 s later.
+    serverNow += 30_000
+    const localNow = 5_000_000
+    const opened = await openAssessment(client, created.id, () => localNow)
+    expect(opened.deadline! - localNow).toBe(30_000)
+    // Using the stale list entry at click time would overstate the time left.
+    expect(localDeadline(listed, localNow)! - localNow).toBe(60_000)
+  })
+
+  test('submit retries once when another save moved the version', async () => {
+    const client = makeClient({ fetchFn: sidecarFetch() })
+    const created = await client.createAssessment({
+      courseKey: COURSE,
+      title: 'Quiz',
+      mode: 'untimed',
+      items: [{ exerciseKey: 'q1', exerciseSnapshot: mcq }],
+    })
+    const started = await client.startAssessment(created.id)
+    const sync = new AssessmentAnswerSync({ client, assessment: started, debounceMs: 60_000 })
+    // Another tab saves an answer, so this sync's version is now stale.
+    await client.saveAssessmentAnswer(created.id, started.items[0]!.id, 'B', started.version)
+    const finalized = await sync.submit()
+    expect(finalized.status).toBe('submitted')
+    sync.dispose()
+  })
+
+  test('flushOnPageHide sends unsaved answers as keepalive requests', async () => {
+    const real = sidecarFetch()
+    const keepalive: boolean[] = []
+    const client = makeClient({
+      fetchFn: (input, init) => {
+        if (String(input).endsWith('/answers')) keepalive.push(Boolean(init?.keepalive))
+        return real(input, init)
+      },
+    })
+    const created = await client.createAssessment({
+      courseKey: COURSE,
+      title: 'Quiz',
+      mode: 'untimed',
+      items: [{ exerciseKey: 'q2', exerciseSnapshot: written }],
+    })
+    const started = await client.startAssessment(created.id)
+    const sync = new AssessmentAnswerSync({ client, assessment: started, debounceMs: 60_000 })
+    sync.setAnswer(started.items[0]!.id, 'Leaving now')
+    sync.flushOnPageHide()
+    await sleep(20)
+    expect(keepalive).toEqual([true])
+    expect((await client.getAssessment(created.id)).items[0]!.answer).toBe('Leaving now')
+    sync.dispose()
   })
 })

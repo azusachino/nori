@@ -17,6 +17,20 @@ export function localDeadline(detail: AssessmentDetail, receivedAt = Date.now())
 }
 
 /**
+ * Fetch an assessment fresh and compute its local deadline at receipt. A
+ * detail from an earlier list call has a stale remainingMs, so never start a
+ * countdown from one.
+ */
+export async function openAssessment(
+  client: NoriClient,
+  assessmentId: string,
+  now: () => number = Date.now,
+): Promise<{ detail: AssessmentDetail; deadline: number | null }> {
+  const detail = await client.getAssessment(assessmentId)
+  return { detail, deadline: localDeadline(detail, now()) }
+}
+
+/**
  * Tick once per interval until the deadline, then call onExpire once.
  * Calls onTick immediately. Returns a stop function.
  */
@@ -115,8 +129,26 @@ export class AssessmentAnswerSync {
     try {
       return this.accept(await this.client.submitAssessment(this.detail.id, this.detail.version))
     } catch (err) {
-      if (err instanceof NoriApiError && err.assessment) this.accept(err.assessment)
-      throw err
+      if (!(err instanceof NoriApiError) || !err.assessment) throw err
+      this.accept(err.assessment)
+      // Version moved under us while still active: retry once with the server's version.
+      if (err.status !== 409 || err.assessment.status !== 'active') throw err
+      return this.accept(await this.client.submitAssessment(this.detail.id, this.detail.version))
+    }
+  }
+
+  /**
+   * Best-effort save of unsaved answers while the page unloads. Uses keepalive
+   * requests without expectedVersion, since there is no time to wait for each
+   * save to return a new version.
+   */
+  flushOnPageHide(): void {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = null
+    for (const [itemId, answer] of this.dirty) {
+      this.client
+        .saveAssessmentAnswer(this.detail.id, itemId, answer, undefined, undefined, { keepalive: true })
+        .catch(() => undefined)
     }
   }
 

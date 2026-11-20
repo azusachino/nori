@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   AssessmentAnswerSync,
   createCountdown,
   formatCountdown,
   localDeadline,
+  openAssessment,
   type AnswerSaveState,
 } from '../assessment-sync'
 import {
@@ -75,6 +76,9 @@ export function NoriAssessment({
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const syncRef = useRef<AssessmentAnswerSync | null>(null)
+  // Id of the assessment on screen; late responses for any other one are dropped.
+  const openIdRef = useRef<string | null>(null)
+  const idPrefix = useId()
 
   useEffect(() => {
     if (inlineExercises) {
@@ -92,9 +96,11 @@ export function NoriAssessment({
     return () => controller.abort()
   }, [bank, inlineExercises])
 
-  const syncAssessment = useCallback((detail: AssessmentDetail) => {
+  // Only pass a detail received just now: its remainingMs is anchored to the moment of receipt.
+  const syncAssessment = useCallback((detail: AssessmentDetail, deadlineAt = localDeadline(detail)) => {
+    openIdRef.current = detail.id
     setActive(detail)
-    setDeadline(localDeadline(detail))
+    setDeadline(deadlineAt)
     setAssessments((prev) => [detail, ...prev.filter((a) => a.id !== detail.id)])
     const nextAnswers: Record<string, string> = {}
     for (const item of detail.items) {
@@ -122,11 +128,47 @@ export function NoriAssessment({
     [client, courseKey],
   )
 
+  const refreshOpen = useCallback(async () => {
+    const id = openIdRef.current
+    if (!id) return
+    const opened = await openAssessment(client, id)
+    if (openIdRef.current === opened.detail.id) syncAssessment(opened.detail, opened.deadline)
+  }, [client, syncAssessment])
+
   const online = useNoriConnection(client, () => {
     loadFromSidecar()
-    // Answers typed while offline are still queued; save them now.
-    syncRef.current?.flush().catch(() => undefined)
+    // Answers typed while offline are still queued: save them, then refresh the open
+    // assessment (it may have expired while offline and still be locked on screen).
+    const sync = syncRef.current
+    ;(sync ? sync.flush() : Promise.resolve())
+      .catch(() => undefined)
+      .then(refreshOpen)
+      .catch(() => undefined)
   })
+
+  const handleOpen = async (assessmentId: string) => {
+    setError(null)
+    try {
+      // List entries carry a stale remainingMs; fetch fresh before starting the countdown.
+      const opened = await openAssessment(client, assessmentId)
+      syncAssessment(opened.detail, opened.deadline)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not open assessment.')
+    }
+  }
+
+  const handleClose = () => {
+    openIdRef.current = null
+    setActive(null)
+  }
+
+  // Save unsaved answers if the learner closes or navigates away from the page.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onPageHide = () => syncRef.current?.flushOnPageHide()
+    window.addEventListener('pagehide', onPageHide)
+    return () => window.removeEventListener('pagehide', onPageHide)
+  }, [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -141,7 +183,9 @@ export function NoriAssessment({
     const sync = new AssessmentAnswerSync({
       client,
       assessment: active,
-      onUpdate: syncAssessment,
+      onUpdate: (detail) => {
+        if (openIdRef.current === detail.id) syncAssessment(detail)
+      },
       onStateChange: setSaveStates,
     })
     syncRef.current = sync
@@ -152,7 +196,6 @@ export function NoriAssessment({
       if (syncRef.current === sync) syncRef.current = null
     }
     // Recreate only when a different assessment becomes active.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, client, syncAssessment])
 
   // Tick from the server deadline. At expiry the server finalizes the assessment
@@ -172,12 +215,11 @@ export function NoriAssessment({
         const sync = syncRef.current
         ;(sync ? sync.flush() : Promise.resolve())
           .catch(() => undefined)
-          .then(() => client.getAssessment(activeId))
-          .then(syncAssessment)
+          .then(refreshOpen)
           .catch((e) => setError(e instanceof Error ? e.message : 'Could not reload the expired assessment.'))
       },
     })
-  }, [deadline, activeId, client, syncAssessment])
+  }, [deadline, activeId, refreshOpen])
 
   const timeUp = remainingMs === 0
 
@@ -324,7 +366,7 @@ export function NoriAssessment({
               <p className="nori-muted">Previous assessments ({assessments.length})</p>
               <div className="nori-actions">
                 {assessments.map((a) => (
-                  <button key={a.id} type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => syncAssessment(a)}>
+                  <button key={a.id} type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => handleOpen(a.id)}>
                     <IconClipboardCheck />
                     <span>
                       {a.title} · {a.status}
@@ -349,7 +391,7 @@ export function NoriAssessment({
                   <span>{timeUp ? 'Time is up' : `${formatCountdown(remainingMs)} left`}</span>
                 </span>
               )}
-              <button type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => setActive(null)}>
+              <button type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={handleClose}>
                 <IconChevronLeft />
                 <span>All assessments</span>
               </button>
@@ -358,6 +400,7 @@ export function NoriAssessment({
 
           {active.items.map((item, idx) => {
             const bankEx = exercises.find((e) => e.key === item.exerciseKey)
+            const promptId = `${idPrefix}-prompt-${idx}`
             return (
               <div key={item.id} className="nori-attempt">
                 <div className="nori-card__top">
@@ -398,15 +441,17 @@ export function NoriAssessment({
                 </div>
 
                 {bankEx?.promptHtml ? (
-                  <div className="nori-card__prompt" dangerouslySetInnerHTML={{ __html: bankEx.promptHtml }} />
+                  <div id={promptId} className="nori-card__prompt" dangerouslySetInnerHTML={{ __html: bankEx.promptHtml }} />
                 ) : (
-                  <div className="nori-card__prompt">{renderRichText(item.prompt)}</div>
+                  <div id={promptId} className="nori-card__prompt">
+                    {renderRichText(item.prompt)}
+                  </div>
                 )}
 
                 {active.status === 'active' ? (
                   <>
                     {item.type === 'multiple_choice' ? (
-                      <div className="nori-options">
+                      <div className="nori-options" role="radiogroup" aria-labelledby={promptId}>
                         {item.options.map((opt, optIdx) => {
                           const isSelected = (answers[item.id] ?? '') === opt
                           return (
@@ -437,6 +482,7 @@ export function NoriAssessment({
                       </div>
                     ) : (
                       <textarea
+                        aria-labelledby={promptId}
                         data-ui="nori"
                         className={`nori-textarea${item.type === 'code' ? ' nori-textarea--code' : ''}`}
                         value={answers[item.id] ?? ''}
