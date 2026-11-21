@@ -11,6 +11,8 @@ import {
   NoriNetworkError,
   resendLocalDrafts,
   saveLocalDraft,
+  toAssessmentSummary,
+  toAttemptSummary,
   verifyCodeInBrowser,
   type ConnectionState,
   type ExerciseSnapshot,
@@ -19,6 +21,7 @@ import {
 } from './index'
 
 const COURSE = 'ml/basics'
+const BASE_URL = 'http://127.0.0.1:3001/api/nori/v1'
 const dirs: string[] = []
 const clients: NoriClient[] = []
 
@@ -650,5 +653,156 @@ describe('second review fixes', () => {
     expect(idsAtFirstSend).toHaveLength(2)
     expect(idsAtFirstSend.every((id) => typeof id === 'string')).toBe(true)
     expect(result.sent).toHaveLength(2)
+  })
+})
+
+describe('auto-save recovery', () => {
+  async function startWritten(client: NoriClient) {
+    const created = await client.createAssessment({
+      courseKey: COURSE,
+      title: 'Quiz',
+      mode: 'untimed',
+      items: [{ exerciseKey: 'w1', exerciseSnapshot: written }],
+    })
+    return client.startAssessment(created.id)
+  }
+
+  test('an answer whose save failed before closing is saved when the assessment is reopened', async () => {
+    const real = sidecarFetch()
+    let down = false
+    const fetchFn: FetchFn = (input, init) => (down ? Promise.reject(new TypeError('offline')) : real(input, init))
+    const client = makeClient({ fetchFn, retryBaseMs: 60_000 })
+    const started = await startWritten(client)
+    const itemId = started.items[0]!.id
+
+    down = true
+    const first = new AssessmentAnswerSync({ client, assessment: started, debounceMs: 60_000, retryBaseMs: 60_000 })
+    first.setAnswer(itemId, 'Typed while offline')
+    await first.flush().catch(() => undefined)
+    first.dispose() // the learner closed the assessment
+
+    down = false
+    const reopened = await client.getAssessment(started.id)
+    expect(reopened.items[0]!.answer).toBeNull()
+    const states: Record<string, string>[] = []
+    const second = new AssessmentAnswerSync({
+      client,
+      assessment: reopened,
+      debounceMs: 5,
+      localAnswers: { [itemId]: 'Typed while offline' },
+      onStateChange: (s) => states.push(s),
+    })
+    expect(second.hasUnsaved).toBe(true)
+    await sleep(60)
+    expect((await client.getAssessment(started.id)).items[0]!.answer).toBe('Typed while offline')
+    expect(states.at(-1)).toEqual({ [itemId]: 'saved' })
+    second.dispose()
+  })
+
+  test('local answers equal to the server are not re-sent', async () => {
+    const client = makeClient({ fetchFn: sidecarFetch() })
+    const started = await startWritten(client)
+    const itemId = started.items[0]!.id
+    const saved = await client.saveAssessmentAnswer(started.id, itemId, 'Same', started.version)
+    const sync = new AssessmentAnswerSync({ client, assessment: saved, localAnswers: { [itemId]: 'Same' } })
+    expect(sync.hasUnsaved).toBe(false)
+    sync.dispose()
+  })
+
+  test('a 409 that survives the version retry is retried later, not rejected', async () => {
+    const real = sidecarFetch()
+    let conflicts = 2
+    const client = makeClient({
+      fetchFn: async (input, init) => {
+        if (String(input).endsWith('/answers') && conflicts > 0) {
+          conflicts--
+          const id = String(input).split('/assessments/')[1]!.split('/')[0]!
+          const current = await (await real(`${BASE_URL}/assessments/${id}`)).json()
+          return Response.json({ error: 'This assessment changed. Reload it.', assessment: current.assessment }, { status: 409 })
+        }
+        return real(input, init)
+      },
+    })
+    const started = await startWritten(client)
+    const itemId = started.items[0]!.id
+    const states: Record<string, string>[] = []
+    const sync = new AssessmentAnswerSync({
+      client,
+      assessment: started,
+      debounceMs: 60_000,
+      retryBaseMs: 10,
+      onStateChange: (s) => states.push(s),
+    })
+    sync.setAnswer(itemId, 'Contended')
+    await sync.flush()
+    expect(states.at(-1)).toEqual({ [itemId]: 'error' })
+    await sleep(80)
+    expect(states.at(-1)).toEqual({ [itemId]: 'saved' })
+    expect((await client.getAssessment(started.id)).items[0]!.answer).toBe('Contended')
+    sync.dispose()
+  })
+
+  test('answers that hit a network error are retried with backoff without another edit', async () => {
+    const real = sidecarFetch()
+    let failures = 2
+    const attemptsAt: number[] = []
+    const client = makeClient({
+      retryBaseMs: 60_000,
+      fetchFn: (input, init) => {
+        if (String(input).endsWith('/answers')) {
+          attemptsAt.push(Date.now())
+          if (failures-- > 0) return Promise.reject(new TypeError('offline'))
+        }
+        return real(input, init)
+      },
+    })
+    const started = await startWritten(client)
+    const sync = new AssessmentAnswerSync({ client, assessment: started, debounceMs: 60_000, retryBaseMs: 15, retryMaxMs: 100 })
+    sync.setAnswer(started.items[0]!.id, 'Eventually')
+    await sync.flush().catch(() => undefined)
+    await sleep(150)
+    expect(attemptsAt).toHaveLength(3)
+    expect(sync.hasUnsaved).toBe(false)
+    expect((await client.getAssessment(started.id)).items[0]!.answer).toBe('Eventually')
+    sync.dispose()
+  })
+})
+
+describe('summary client calls', () => {
+  test('islands read slim lists and fetch the full attempt on demand', async () => {
+    const client = makeClient({ fetchFn: sidecarFetch() })
+    const created = await client.createAttempt({ courseKey: COURSE, lessonKey: 'l', exerciseKey: 'q2', exerciseSnapshot: written, answer: 'Mine' })
+    const { attempts } = await client.listPracticeSummaries({ courseKey: COURSE, lessonKey: 'l' })
+    expect(attempts[0]).toMatchObject({ id: created.id, exerciseType: 'written', hasFeedback: false })
+    expect(toAttemptSummary(created)).toEqual(attempts[0]!)
+    expect((await client.getAttempt(created.id)).exerciseSnapshot.prompt).toBe('Explain')
+    const review = await client.getReviewQueueSummary({ courseKey: COURSE })
+    expect(review.items[0]!.latestAttempt).toMatchObject({ id: created.id, prompt: 'Explain' })
+    const quiz = await client.createAssessment({ courseKey: COURSE, title: 'Q', mode: 'untimed', items: [{ exerciseKey: 'q1', exerciseSnapshot: mcq }] })
+    const list = await client.listAssessmentSummaries(COURSE)
+    const { serverNow: _a, ...listed } = list.assessments[0]!
+    const { serverNow: _b, ...fetched } = toAssessmentSummary(await client.getAssessment(quiz.id))
+    expect(listed).toEqual(fetched)
+  })
+})
+
+describe('older sidecars', () => {
+  test('summary calls still work against a sidecar that ignores view=summary', async () => {
+    const real = sidecarFetch()
+    const client = makeClient({
+      fetchFn: (input, init) => {
+        const url = new URL(String(input))
+        url.searchParams.delete('view')
+        return real(url.toString(), init)
+      },
+    })
+    const created = await client.createAttempt({ courseKey: COURSE, lessonKey: 'l', exerciseKey: 'q1', exerciseSnapshot: mcq, answer: 'B' })
+    const { attempts } = await client.listPracticeSummaries({ courseKey: COURSE, lessonKey: 'l' })
+    expect(attempts[0]).toEqual(toAttemptSummary(created))
+    const review = await client.getReviewQueueSummary({ courseKey: COURSE })
+    expect(review.items[0]!.latestAttempt).toMatchObject({ id: created.id, exerciseType: 'multiple_choice', options: ['A', 'B'] })
+    expect(review.items[0]!.latestAttempt).not.toHaveProperty('exerciseSnapshot')
+    await client.createAssessment({ courseKey: COURSE, title: 'Q', mode: 'untimed', items: [{ exerciseKey: 'q1', exerciseSnapshot: mcq }] })
+    expect((await client.listAssessmentSummaries(COURSE)).assessments[0]).not.toHaveProperty('items')
   })
 })

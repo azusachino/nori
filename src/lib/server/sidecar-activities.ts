@@ -2,7 +2,7 @@ import { and, asc, count, desc, eq, sql } from 'drizzle-orm'
 import type { BunSQLiteDatabase } from 'drizzle-orm/bun-sqlite'
 import { createHash } from 'node:crypto'
 import { complete, CONTEXT_LIMIT, ModelError } from './ai'
-import { readJson } from './input'
+import { INVALID_VIEW_ERROR, parseListView, readJson } from './input'
 import {
   practiceAttempts,
   sidecarAssessmentAnswers,
@@ -24,7 +24,7 @@ import {
   validateLessonKey,
   type ExerciseSnapshot,
 } from './sidecar'
-import { buildRecallDigest, buildReviewQueue } from './review'
+import { buildRecallDigest, buildReviewQueue, buildReviewQueueSummary } from './review'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const LARGE_BODY_LIMIT = 262144
@@ -193,6 +193,69 @@ function buildAssessmentDetail(orm: SidecarOrm, row: AssessmentRow, now: number)
   }
 }
 
+/**
+ * Assessment list without items: the header fields and summary counts, counted
+ * in SQLite. Expired timed assessments are finalized first, as in the full view.
+ */
+function listAssessmentSummaries(orm: SidecarOrm, courseKey: string, now: number) {
+  const overdue = orm
+    .select({ id: sidecarAssessments.id })
+    .from(sidecarAssessments)
+    .where(
+      and(
+        eq(sidecarAssessments.courseKey, courseKey),
+        eq(sidecarAssessments.status, 'active'),
+        eq(sidecarAssessments.mode, 'timed'),
+        sql`${sidecarAssessments.deadlineAt} <= ${now}`,
+      ),
+    )
+    .all()
+  for (const { id } of overdue) loadAssessment(orm, id, now)
+
+  const rows = orm.all<Record<string, unknown>>(sql`
+    SELECT a.*,
+      (SELECT COUNT(*) FROM sidecar_assessment_items i WHERE i.assessment_id = a.id) AS total_items,
+      (SELECT COUNT(*) FROM sidecar_assessment_answers s WHERE s.assessment_id = a.id AND s.answer <> '') AS answered_count,
+      (SELECT COUNT(*) FROM sidecar_assessment_results r WHERE r.assessment_id = a.id AND r.grading = 'deterministic') AS deterministic_total,
+      (SELECT COUNT(*) FROM sidecar_assessment_results r WHERE r.assessment_id = a.id AND r.grading = 'deterministic' AND r.correct = 1) AS deterministic_correct,
+      (SELECT COUNT(*) FROM sidecar_assessment_results r WHERE r.assessment_id = a.id AND r.grading = 'unscored') AS unscored_count
+    FROM sidecar_assessments a
+    WHERE a.course_key = ${courseKey}
+    ORDER BY a.created_at DESC
+  `)
+  return rows.map((r) => {
+    const status = r.status as AssessmentRow['status']
+    const mode = r.mode as AssessmentRow['mode']
+    const deadlineAt = r.deadline_at as number | null
+    const deterministicTotal = r.deterministic_total as number
+    const deterministicCorrect = r.deterministic_correct as number
+    return {
+      id: r.id as string,
+      courseKey: r.course_key as string,
+      title: r.title as string,
+      mode,
+      durationSeconds: r.duration_seconds as number | null,
+      status,
+      createdAt: r.created_at as number,
+      startedAt: r.started_at as number | null,
+      deadlineAt,
+      submittedAt: r.submitted_at as number | null,
+      finalizedAt: r.finalized_at as number | null,
+      version: r.version as number,
+      serverNow: now,
+      remainingMs: status === 'active' && mode === 'timed' && deadlineAt !== null ? Math.max(0, deadlineAt - now) : null,
+      summary: {
+        totalItems: r.total_items as number,
+        answeredCount: r.answered_count as number,
+        deterministicTotal,
+        deterministicCorrect,
+        deterministicIncorrect: deterministicTotal - deterministicCorrect,
+        unscoredCount: r.unscored_count as number,
+      },
+    }
+  })
+}
+
 export async function handleSidecarActivities(
   orm: SidecarOrm,
   subPath: string,
@@ -205,13 +268,18 @@ export async function handleSidecarActivities(
   if (subPath === '/v1/assessments' && request.method === 'GET') {
     const courseKey = validateCourseKey(url.searchParams.get('courseKey'))
     if (!courseKey) return Response.json({ error: 'Provide a valid courseKey in <track>/<course> format.' }, { status: 400 })
+    const view = parseListView(url)
+    if (!view) return Response.json({ error: INVALID_VIEW_ERROR }, { status: 400 })
+    const ts = now()
+    if (view === 'summary') {
+      return Response.json({ courseKey, assessments: listAssessmentSummaries(orm, courseKey, ts) }, { headers: { 'Cache-Control': 'no-store' } })
+    }
     const rows = orm
       .select({ id: sidecarAssessments.id })
       .from(sidecarAssessments)
       .where(eq(sidecarAssessments.courseKey, courseKey))
       .orderBy(desc(sidecarAssessments.createdAt))
       .all()
-    const ts = now()
     const assessments = rows
       .map((r) => loadAssessment(orm, r.id, ts))
       .filter((r): r is AssessmentRow => r !== null)
@@ -707,7 +775,12 @@ export async function handleSidecarActivities(
       }
     }
     const onlyDue = url.searchParams.get('onlyDue') === '1' || url.searchParams.get('onlyDue') === 'true'
-    const queue = buildReviewQueue(orm, { courseKey, onlyDue, now: now() })
+    const view = parseListView(url)
+    if (!view) return Response.json({ error: INVALID_VIEW_ERROR }, { status: 400 })
+    const queue =
+      view === 'summary'
+        ? buildReviewQueueSummary(orm, { courseKey, onlyDue, now: now() })
+        : buildReviewQueue(orm, { courseKey, onlyDue, now: now() })
     return Response.json(queue, { headers: { 'Cache-Control': 'no-store' } })
   }
 

@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm'
+import { asc, count, eq, sql } from 'drizzle-orm'
 import type { BunSQLiteDatabase } from 'drizzle-orm/bun-sqlite'
 import { practiceAttempts, sidecarSchema, sidecarTutorLessons, sidecarTutorTurns } from './schema'
 import type { ExerciseSnapshot, PracticeAttempt } from './sidecar'
@@ -50,13 +50,136 @@ export type RecallDigestResponse = {
 }
 
 const DAY_MS = 86_400_000
-const INTERVAL_SCHEDULE_DAYS = [1, 3, 7, 14, 30]
 
-const REASON_PRIORITY: Record<ReviewReason, number> = {
-  incorrect: 0,
-  has_takeaway_note: 1,
-  due_for_recall: 2,
-  scheduled: 3,
+const REASONS: ReviewReason[] = ['incorrect', 'has_takeaway_note', 'due_for_recall', 'scheduled']
+
+/** The latest attempt as the review island renders it: no reference answer, explanation or feedback. */
+export type ReviewAttemptSummary = {
+  id: string
+  contentHash: string
+  exerciseType: ExerciseSnapshot['type']
+  prompt: string
+  options: string[]
+  answer: string
+  correct: number | null
+  grading: 'deterministic' | 'unscored'
+  ownerNote: string
+  createdAt: number
+}
+
+export type ReviewQueueSummaryItem = Omit<ReviewQueueItem, 'latestAttempt'> & { latestAttempt: ReviewAttemptSummary }
+
+type ReviewRow = typeof practiceAttempts.$inferSelect & {
+  attemptCount: number
+  streak: number
+  intervalDays: number
+  dueAt: number
+  isDue: number
+  reasonRank: number
+  totalTracked: number
+  dueNow: number
+  incorrectCount: number
+}
+
+/**
+ * One row per tracked exercise (course, lesson, exercise), computed in SQLite:
+ * the latest attempt, the run of trailing deterministic-correct attempts
+ * (streak), the spaced-recall interval (0 if the latest is incorrect, 1 day
+ * after a takeaway note, then 1/3/7/14/30 days by streak, 3 days for
+ * open-ended), the due time and the reason rank. Only the selected rows reach
+ * JavaScript, already ordered by reason and due time.
+ */
+function reviewRows(orm: SidecarOrm, courseKey: string | null, now: number, onlyDue: boolean): ReviewRow[] {
+  const query = sql`
+    WITH ranked AS (
+      -- Everything is ranked and scored on narrow columns; the wide text columns
+      -- (snapshot, answer, feedback) are read only for the rows returned.
+      SELECT rowid AS rid, course_key, lesson_key, exercise_key, created_at, grading, correct,
+        owner_note <> '' AS has_note,
+        ROW_NUMBER() OVER (
+          PARTITION BY course_key, lesson_key, exercise_key ORDER BY created_at DESC, rowid DESC
+        ) AS rn
+      FROM practice_attempts
+      ${courseKey === null ? sql`` : sql`WHERE course_key = ${courseKey}`}
+    ),
+    groups AS (
+      -- One pass over the ranked rows: the latest attempt's fields (rn = 1) and the streak.
+      SELECT
+        MAX(CASE WHEN rn = 1 THEN rid END) AS latest_rid,
+        MAX(CASE WHEN rn = 1 THEN created_at END) AS latest_at,
+        MAX(CASE WHEN rn = 1 THEN grading = 'deterministic' AND correct = 0 END) AS is_incorrect,
+        MAX(CASE WHEN rn = 1 THEN has_note END) AS has_note,
+        MAX(rn) AS attempt_count,
+        MIN(created_at) AS first_at,
+        COALESCE(
+          MIN(CASE WHEN NOT (grading = 'deterministic' AND COALESCE(correct, 0) = 1) THEN rn END) - 1,
+          MAX(rn)
+        ) AS streak
+      FROM ranked
+      GROUP BY course_key, lesson_key, exercise_key
+    ),
+    latest AS (
+      SELECT groups.*,
+        CASE
+          WHEN is_incorrect THEN 0
+          WHEN has_note AND streak <= 1 THEN 1
+          WHEN streak >= 5 THEN 30
+          WHEN streak = 4 THEN 14
+          WHEN streak = 3 THEN 7
+          WHEN streak = 2 THEN 3
+          WHEN streak = 1 THEN 1
+          ELSE 3
+        END AS interval_days
+      FROM groups
+    ),
+    scored AS (
+      SELECT latest.*,
+        latest_at + interval_days * ${DAY_MS} AS due_at,
+        CASE WHEN interval_days = 0 OR ${now} >= latest_at + interval_days * ${DAY_MS} THEN 1 ELSE 0 END AS is_due
+      FROM latest
+    ),
+    counted AS (
+      SELECT scored.*,
+        CASE WHEN is_incorrect THEN 0 WHEN has_note AND is_due = 1 THEN 1 WHEN is_due = 1 THEN 2 ELSE 3 END AS reason_rank,
+        COUNT(*) OVER () AS total_tracked,
+        SUM(is_due) OVER () AS due_now,
+        SUM(is_incorrect) OVER () AS incorrect_count
+      FROM scored
+    )
+    SELECT p.*, c.attempt_count, c.streak, c.interval_days, c.due_at, c.is_due, c.reason_rank,
+      c.total_tracked, c.due_now, c.incorrect_count
+    FROM counted c
+    JOIN practice_attempts p ON p.rowid = c.latest_rid
+    WHERE ${onlyDue ? 1 : 0} = 0 OR c.is_due = 1
+    ORDER BY c.reason_rank, c.due_at, c.first_at
+  `
+  const raw = orm.all<Record<string, unknown>>(query)
+  return raw.map((r) => ({
+    id: r.id as string,
+    courseKey: r.course_key as string,
+    lessonKey: r.lesson_key as string,
+    exerciseKey: r.exercise_key as string,
+    contentHash: r.content_hash as string,
+    exerciseSnapshot: r.exercise_snapshot as string,
+    answer: r.answer as string,
+    correct: r.correct as number | null,
+    grading: r.grading as 'deterministic' | 'unscored',
+    feedback: r.feedback as string,
+    advisory: r.advisory as number,
+    ownerNote: r.owner_note as string,
+    version: r.version as number,
+    createdAt: r.created_at as number,
+    updatedAt: r.updated_at as number,
+    attemptCount: r.attempt_count as number,
+    streak: r.streak as number,
+    intervalDays: r.interval_days as number,
+    dueAt: r.due_at as number,
+    isDue: r.is_due as number,
+    reasonRank: r.reason_rank as number,
+    totalTracked: r.total_tracked as number,
+    dueNow: r.due_now as number,
+    incorrectCount: r.incorrect_count as number,
+  }))
 }
 
 function rowToAttempt(row: typeof practiceAttempts.$inferSelect): PracticeAttempt {
@@ -79,104 +202,79 @@ function rowToAttempt(row: typeof practiceAttempts.$inferSelect): PracticeAttemp
   }
 }
 
+function reviewSummary(orm: SidecarOrm, courseKey: string | null, now: number, rows: ReviewRow[], onlyDue: boolean) {
+  // Counts ride on every row; only an empty onlyDue result needs a second query.
+  const first = rows[0] ?? (onlyDue ? reviewRows(orm, courseKey, now, false)[0] : undefined)
+  const totalTracked = first?.totalTracked ?? 0
+  const dueNow = first?.dueNow ?? 0
+  return {
+    totalTracked,
+    dueNow,
+    incorrectCount: first?.incorrectCount ?? 0,
+    scheduledCount: totalTracked - dueNow,
+  }
+}
+
+function itemFields(row: ReviewRow) {
+  return {
+    courseKey: row.courseKey,
+    lessonKey: row.lessonKey,
+    exerciseKey: row.exerciseKey,
+    attemptCount: row.attemptCount,
+    lastAttemptAt: row.createdAt,
+    streak: row.streak,
+    intervalDays: row.intervalDays,
+    dueAt: row.dueAt,
+    isDue: row.isDue === 1,
+    reason: REASONS[row.reasonRank]!,
+  }
+}
+
 export function buildReviewQueue(
   orm: SidecarOrm,
   options: { courseKey?: string | null; onlyDue?: boolean; now?: number } = {},
 ): ReviewQueueResponse {
   const now = options.now ?? Date.now()
-  const rows = options.courseKey
-    ? orm
-        .select()
-        .from(practiceAttempts)
-        .where(eq(practiceAttempts.courseKey, options.courseKey))
-        .orderBy(asc(practiceAttempts.createdAt))
-        .all()
-    : orm.select().from(practiceAttempts).orderBy(asc(practiceAttempts.createdAt)).all()
-
-  const groups = new Map<string, PracticeAttempt[]>()
-  for (const row of rows) {
-    const attempt = rowToAttempt(row)
-    const key = `${attempt.courseKey}::${attempt.lessonKey}::${attempt.exerciseKey}`
-    const list = groups.get(key)
-    if (list) list.push(attempt)
-    else groups.set(key, [attempt])
-  }
-
-  const allItems: ReviewQueueItem[] = []
-  for (const list of groups.values()) {
-    const latest = list[list.length - 1]!
-    let streak = 0
-    for (let i = list.length - 1; i >= 0; i--) {
-      const a = list[i]!
-      if (a.grading === 'deterministic' && a.correct === 1) {
-        streak++
-      } else {
-        break
-      }
-    }
-
-    let intervalDays: number
-    if (latest.grading === 'deterministic' && latest.correct === 0) {
-      intervalDays = 0
-    } else if (latest.ownerNote && streak <= 1) {
-      intervalDays = 1
-    } else if (streak >= 1) {
-      intervalDays = INTERVAL_SCHEDULE_DAYS[Math.min(streak - 1, INTERVAL_SCHEDULE_DAYS.length - 1)]!
-    } else {
-      intervalDays = 3
-    }
-
-    const dueAt = latest.createdAt + intervalDays * DAY_MS
-    const isDue = intervalDays === 0 || now >= dueAt
-
-    let reason: ReviewReason
-    if (latest.grading === 'deterministic' && latest.correct === 0) {
-      reason = 'incorrect'
-    } else if (latest.ownerNote && isDue) {
-      reason = 'has_takeaway_note'
-    } else if (isDue) {
-      reason = 'due_for_recall'
-    } else {
-      reason = 'scheduled'
-    }
-
-    allItems.push({
-      courseKey: latest.courseKey,
-      lessonKey: latest.lessonKey,
-      exerciseKey: latest.exerciseKey,
-      attemptCount: list.length,
-      lastAttemptAt: latest.createdAt,
-      streak,
-      intervalDays,
-      dueAt,
-      isDue,
-      reason,
-      latestAttempt: latest,
-    })
-  }
-
-  allItems.sort((a, b) => {
-    const pDiff = REASON_PRIORITY[a.reason] - REASON_PRIORITY[b.reason]
-    if (pDiff !== 0) return pDiff
-    return a.dueAt - b.dueAt
-  })
-
-  const dueNow = allItems.filter((item) => item.isDue).length
-  const incorrectCount = allItems.filter((item) => item.reason === 'incorrect').length
-  const scheduledCount = allItems.length - dueNow
-
-  const items = options.onlyDue ? allItems.filter((item) => item.isDue) : allItems
-
+  const courseKey = options.courseKey ?? null
+  const rows = reviewRows(orm, courseKey, now, Boolean(options.onlyDue))
   return {
-    courseKey: options.courseKey ?? null,
+    courseKey,
     serverNow: now,
-    summary: {
-      totalTracked: allItems.length,
-      dueNow,
-      incorrectCount,
-      scheduledCount,
-    },
-    items,
+    summary: reviewSummary(orm, courseKey, now, rows, Boolean(options.onlyDue)),
+    items: rows.map((row) => ({ ...itemFields(row), latestAttempt: rowToAttempt(row) })),
+  }
+}
+
+/** The review queue as the island renders it; fetch a full attempt by id when it is needed. */
+export function buildReviewQueueSummary(
+  orm: SidecarOrm,
+  options: { courseKey?: string | null; onlyDue?: boolean; now?: number } = {},
+): Omit<ReviewQueueResponse, 'items'> & { items: ReviewQueueSummaryItem[] } {
+  const now = options.now ?? Date.now()
+  const courseKey = options.courseKey ?? null
+  const rows = reviewRows(orm, courseKey, now, Boolean(options.onlyDue))
+  return {
+    courseKey,
+    serverNow: now,
+    summary: reviewSummary(orm, courseKey, now, rows, Boolean(options.onlyDue)),
+    items: rows.map((row) => {
+      const snapshot = JSON.parse(row.exerciseSnapshot) as ExerciseSnapshot
+      return {
+        ...itemFields(row),
+        latestAttempt: {
+          id: row.id,
+          contentHash: row.contentHash,
+          exerciseType: snapshot.type,
+          prompt: snapshot.prompt,
+          options: snapshot.options,
+          answer: row.answer,
+          correct: row.correct,
+          grading: row.grading,
+          ownerNote: row.ownerNote,
+          createdAt: row.createdAt,
+        },
+      }
+    }),
   }
 }
 
@@ -187,14 +285,11 @@ export function buildRecallDigest(
   const now = options.now ?? Date.now()
   const review = buildReviewQueue(orm, { courseKey: options.courseKey, now })
 
-  const attemptRows = options.courseKey
-    ? orm
-        .select()
-        .from(practiceAttempts)
-        .where(eq(practiceAttempts.courseKey, options.courseKey))
-        .orderBy(asc(practiceAttempts.createdAt))
-        .all()
-    : orm.select().from(practiceAttempts).orderBy(asc(practiceAttempts.createdAt)).all()
+  const totalAttempts =
+    (options.courseKey
+      ? orm.select({ n: count() }).from(practiceAttempts).where(eq(practiceAttempts.courseKey, options.courseKey)).get()
+      : orm.select({ n: count() }).from(practiceAttempts).get()
+    )?.n ?? 0
 
   const tutorRows = options.courseKey
     ? orm
@@ -237,7 +332,7 @@ export function buildRecallDigest(
   const lines: string[] = [
     `## nori recall digest — ${scopeLabel} (${dateStr})`,
     '',
-    `- **Tracked exercises:** \`${review.summary.totalTracked}\` (\`${correctCount}\` correct, \`${incorrectCount}\` incorrect, \`${unscoredCount}\` open-ended) across \`${attemptRows.length}\` total attempts.`,
+    `- **Tracked exercises:** \`${review.summary.totalTracked}\` (\`${correctCount}\` correct, \`${incorrectCount}\` incorrect, \`${unscoredCount}\` open-ended) across \`${totalAttempts}\` total attempts.`,
     `- **Due for recall / weak spots:** \`${weakSpots.length}\` item(s) due now (\`${takeawayNotesCount}\` takeaway note(s), \`${tutorRows.length}\` tutor turn(s)).`,
     '',
   ]
@@ -293,7 +388,7 @@ export function buildRecallDigest(
     courseKey: options.courseKey ?? null,
     generatedAt: now,
     stats: {
-      totalAttempts: attemptRows.length,
+      totalAttempts: totalAttempts,
       distinctExercises: review.summary.totalTracked,
       correctCount,
       incorrectCount,

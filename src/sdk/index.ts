@@ -48,6 +48,18 @@ export type PracticeAttempt = {
   updatedAt: number
 }
 
+/** An attempt as list views return it (`view=summary`): no exercise snapshot and no feedback text. */
+export type PracticeAttemptSummary = Omit<PracticeAttempt, 'exerciseSnapshot' | 'feedback'> & {
+  exerciseType: SidecarExerciseType
+  hasFeedback: boolean
+}
+
+export function toAttemptSummary(attempt: PracticeAttempt | PracticeAttemptSummary): PracticeAttemptSummary {
+  if (!('exerciseSnapshot' in attempt)) return attempt
+  const { exerciseSnapshot, feedback, ...rest } = attempt
+  return { ...rest, exerciseType: exerciseSnapshot.type, hasFeedback: feedback !== '' }
+}
+
 export type HealthStatus = {
   ok: boolean
   apiVersion: number
@@ -121,6 +133,15 @@ export type AssessmentDetail = {
   items: AssessmentItemDetail[]
 }
 
+/** An assessment as the list's summary view returns it: no items, prompts or answers. */
+export type AssessmentSummary = Omit<AssessmentDetail, 'items'>
+
+export function toAssessmentSummary(detail: AssessmentDetail | AssessmentSummary): AssessmentSummary {
+  if (!('items' in detail)) return detail
+  const { items: _items, ...summary } = detail
+  return summary
+}
+
 export type CreateAssessmentInput = {
   courseKey: string
   title: string
@@ -179,6 +200,44 @@ export type ReviewQueueItem = {
   isDue: boolean
   reason: ReviewReason
   latestAttempt: PracticeAttempt
+}
+
+/** The latest attempt in the review queue's summary view: what the island renders, no reference answer. */
+export type ReviewAttemptSummary = {
+  id: string
+  contentHash: string
+  exerciseType: SidecarExerciseType
+  prompt: string
+  options: string[]
+  answer: string
+  correct: number | null
+  grading: 'deterministic' | 'unscored'
+  ownerNote: string
+  createdAt: number
+}
+
+export type ReviewQueueSummaryItem = Omit<ReviewQueueItem, 'latestAttempt'> & { latestAttempt: ReviewAttemptSummary }
+
+export type ReviewQueueSummaryResponse = Omit<ReviewQueueResponse, 'items'> & { items: ReviewQueueSummaryItem[] }
+
+export function toReviewSummaryItem(item: ReviewQueueItem | ReviewQueueSummaryItem): ReviewQueueSummaryItem {
+  const latest = item.latestAttempt
+  if (!('exerciseSnapshot' in latest)) return item as ReviewQueueSummaryItem
+  return {
+    ...item,
+    latestAttempt: {
+      id: latest.id,
+      contentHash: latest.contentHash,
+      exerciseType: latest.exerciseSnapshot.type,
+      prompt: latest.exerciseSnapshot.prompt,
+      options: latest.exerciseSnapshot.options,
+      answer: latest.answer,
+      correct: latest.correct,
+      grading: latest.grading,
+      ownerNote: latest.ownerNote,
+      createdAt: latest.createdAt,
+    },
+  }
 }
 
 export type ReviewQueueResponse = {
@@ -438,6 +497,30 @@ export class NoriClient {
     return this.request(`/practice?${query.toString()}`, { method: 'GET', signal })
   }
 
+  /** Attempts without snapshots or feedback text; fetch one in full with getAttempt. */
+  async listPracticeSummaries(
+    params: { courseKey: string; lessonKey?: string; exerciseKey?: string },
+    signal?: AbortSignal,
+  ): Promise<{ courseKey: string; lessonKey: string | null; attempts: PracticeAttemptSummary[] }> {
+    const query = new URLSearchParams({ courseKey: params.courseKey, view: 'summary' })
+    if (params.lessonKey !== undefined) query.set('lessonKey', params.lessonKey)
+    if (params.exerciseKey !== undefined) query.set('exerciseKey', params.exerciseKey)
+    const data = await this.request<{ courseKey: string; lessonKey: string | null; attempts: (PracticeAttempt | PracticeAttemptSummary)[] }>(
+      `/practice?${query.toString()}`,
+      { method: 'GET', signal },
+    )
+    // A sidecar older than the summary view ignores `view` and sends full attempts.
+    return { ...data, attempts: data.attempts.map(toAttemptSummary) }
+  }
+
+  async getAttempt(attemptId: string, signal?: AbortSignal): Promise<PracticeAttempt> {
+    const data = await this.request<{ attempt: PracticeAttempt }>(`/practice/attempts/${encodeURIComponent(attemptId)}`, {
+      method: 'GET',
+      signal,
+    })
+    return data.attempt
+  }
+
   async createAttempt(input: CreateAttemptInput, signal?: AbortSignal): Promise<PracticeAttempt> {
     const data = await this.request<{ attempt: PracticeAttempt }>('/practice/attempts', {
       method: 'POST',
@@ -474,6 +557,19 @@ export class NoriClient {
   async listAssessments(courseKey: string, signal?: AbortSignal): Promise<{ courseKey: string; assessments: AssessmentDetail[] }> {
     const query = new URLSearchParams({ courseKey })
     return this.request(`/assessments?${query.toString()}`, { method: 'GET', signal })
+  }
+
+  /** Assessments without items; open one with getAssessment. */
+  async listAssessmentSummaries(
+    courseKey: string,
+    signal?: AbortSignal,
+  ): Promise<{ courseKey: string; assessments: AssessmentSummary[] }> {
+    const query = new URLSearchParams({ courseKey, view: 'summary' })
+    const data = await this.request<{ courseKey: string; assessments: (AssessmentDetail | AssessmentSummary)[] }>(
+      `/assessments?${query.toString()}`,
+      { method: 'GET', signal },
+    )
+    return { ...data, assessments: data.assessments.map(toAssessmentSummary) }
   }
 
   async createAssessment(input: CreateAssessmentInput, signal?: AbortSignal): Promise<AssessmentDetail> {
@@ -591,6 +687,21 @@ export class NoriClient {
     return this.request(`/review${qs ? `?${qs}` : ''}`, { method: 'GET', signal })
   }
 
+  /** The review queue with slim latest attempts; fetch the full attempt with getAttempt when needed. */
+  async getReviewQueueSummary(
+    params: { courseKey?: string; onlyDue?: boolean } = {},
+    signal?: AbortSignal,
+  ): Promise<ReviewQueueSummaryResponse> {
+    const query = new URLSearchParams({ view: 'summary' })
+    if (params.courseKey) query.set('courseKey', params.courseKey)
+    if (params.onlyDue) query.set('onlyDue', '1')
+    const data = await this.request<ReviewQueueResponse | ReviewQueueSummaryResponse>(`/review?${query.toString()}`, {
+      method: 'GET',
+      signal,
+    })
+    return { ...data, items: data.items.map(toReviewSummaryItem) }
+  }
+
   async getRecallDigest(
     params: { courseKey?: string } = {},
     signal?: AbortSignal,
@@ -619,11 +730,11 @@ export function getSharedNoriClient(baseUrl = '/api/nori/v1'): NoriClient {
 export type PracticeUpdatedDetail = {
   courseKey: string
   lessonKey: string
-  attempts?: PracticeAttempt[]
+  attempts?: PracticeAttemptSummary[]
 }
 
 /** Insert or replace attempts by id, keeping existing order. */
-export function mergeAttempts(prev: PracticeAttempt[], incoming: PracticeAttempt[]): PracticeAttempt[] {
+export function mergeAttempts<T extends { id: string }>(prev: T[], incoming: T[]): T[] {
   const next = [...prev]
   for (const attempt of incoming) {
     const idx = next.findIndex((item) => item.id === attempt.id)

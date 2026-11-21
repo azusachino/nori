@@ -21,7 +21,17 @@ export const practiceAttempts = sqliteTable(
   },
   (table) => [
     index('practice_attempts_scope').on(table.courseKey, table.lessonKey, table.createdAt),
-    index('practice_attempts_exercise').on(table.courseKey, table.lessonKey, table.exerciseKey, table.createdAt),
+    // Covers the review queue's ranking (partition, order and the grading/correct/owner_note
+    // tests) so it never reads the wide snapshot, answer and feedback columns.
+    index('practice_attempts_review').on(
+      table.courseKey,
+      table.lessonKey,
+      table.exerciseKey,
+      table.createdAt,
+      table.grading,
+      table.correct,
+      table.ownerNote,
+    ),
   ],
 )
 

@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/bun-sqlite'
 import { createHash } from 'node:crypto'
 import { complete, ModelError } from './ai'
 import { setting } from './config'
-import { readJson } from './input'
+import { INVALID_VIEW_ERROR, parseListView, readJson } from './input'
 import { practiceAttempts, sidecarSchema } from './schema'
 import { handleSidecarActivities } from './sidecar-activities'
 
@@ -230,6 +230,36 @@ function stripBasePath(pathname: string, basePath: string): string | null {
   return null
 }
 
+/** Columns of the summary view: no exercise snapshot and no feedback text. */
+export const practiceAttemptSummaryColumns = {
+  id: practiceAttempts.id,
+  courseKey: practiceAttempts.courseKey,
+  lessonKey: practiceAttempts.lessonKey,
+  exerciseKey: practiceAttempts.exerciseKey,
+  contentHash: practiceAttempts.contentHash,
+  exerciseType: sql<SidecarExerciseType>`json_extract(${practiceAttempts.exerciseSnapshot}, '$.type')`,
+  answer: practiceAttempts.answer,
+  correct: practiceAttempts.correct,
+  grading: practiceAttempts.grading,
+  hasFeedback: sql<number>`${practiceAttempts.feedback} <> ''`,
+  advisory: practiceAttempts.advisory,
+  ownerNote: practiceAttempts.ownerNote,
+  version: practiceAttempts.version,
+  createdAt: practiceAttempts.createdAt,
+  updatedAt: practiceAttempts.updatedAt,
+}
+
+export type PracticeAttemptSummary = Omit<PracticeAttempt, 'exerciseSnapshot' | 'feedback'> & {
+  exerciseType: SidecarExerciseType
+  hasFeedback: boolean
+}
+
+export function toPracticeAttemptSummary(
+  row: Omit<PracticeAttemptSummary, 'hasFeedback' | 'advisory'> & { hasFeedback: number; advisory: number },
+): PracticeAttemptSummary {
+  return { ...row, hasFeedback: Boolean(row.hasFeedback), advisory: Boolean(row.advisory) }
+}
+
 function toPracticeAttempt(row: PracticeAttemptRow): PracticeAttempt {
   return {
     id: row.id,
@@ -313,21 +343,34 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
         return Response.json({ error: 'Provide a valid exerciseKey.' }, { status: 400 })
       }
 
+      const view = parseListView(url)
+      if (!view) return Response.json({ error: INVALID_VIEW_ERROR }, { status: 400 })
+
       const filters = [eq(practiceAttempts.courseKey, courseKey)]
       if (hasLesson && typeof lessonKey === 'string') filters.push(eq(practiceAttempts.lessonKey, lessonKey))
       if (hasExercise && typeof exerciseKey === 'string') filters.push(eq(practiceAttempts.exerciseKey, exerciseKey))
 
-      const rows = orm
-        .select()
-        .from(practiceAttempts)
-        .where(and(...filters))
-        .orderBy(asc(practiceAttempts.createdAt))
-        .all()
+      const attempts =
+        view === 'summary'
+          ? orm
+              .select(practiceAttemptSummaryColumns)
+              .from(practiceAttempts)
+              .where(and(...filters))
+              .orderBy(asc(practiceAttempts.createdAt))
+              .all()
+              .map(toPracticeAttemptSummary)
+          : orm
+              .select()
+              .from(practiceAttempts)
+              .where(and(...filters))
+              .orderBy(asc(practiceAttempts.createdAt))
+              .all()
+              .map(toPracticeAttempt)
       return Response.json(
         {
           courseKey,
           lessonKey: hasLesson ? lessonKey : null,
-          attempts: rows.map(toPracticeAttempt),
+          attempts,
         },
         { headers: { 'Cache-Control': 'no-store' } },
       )
@@ -424,6 +467,16 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
         .run()
       const row = orm.select().from(practiceAttempts).where(eq(practiceAttempts.id, id)).get()!
       return Response.json({ attempt: toPracticeAttempt(row) }, { status: 201 })
+    }
+
+    const attemptGetMatch = subPath.match(/^\/v1\/practice\/attempts\/([^/]+)$/)
+    if (attemptGetMatch && request.method === 'GET') {
+      const attemptId = attemptGetMatch[1]!
+      const row = UUID_RE.test(attemptId)
+        ? orm.select().from(practiceAttempts).where(eq(practiceAttempts.id, attemptId.toLowerCase())).get()
+        : undefined
+      if (!row) return Response.json({ error: 'Attempt not found.' }, { status: 404 })
+      return Response.json({ attempt: toPracticeAttempt(row) }, { headers: { 'Cache-Control': 'no-store' } })
     }
 
     const attemptActionMatch = subPath.match(/^\/v1\/practice\/attempts\/([^/]+)\/(feedback|correct)$/)

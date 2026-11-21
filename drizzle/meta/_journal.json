@@ -8,6 +8,13 @@
       "when": 1795076899651,
       "tag": "0000_sidecar_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1795225506192,
+      "tag": "0001_review_covering_index",
+      "breakpoints": true
     }
   ]
 }

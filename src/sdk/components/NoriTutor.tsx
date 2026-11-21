@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   getSharedNoriClient,
   mergeAttempts,
-  type PracticeAttempt,
+  type PracticeAttemptSummary,
   type PracticeUpdatedDetail,
   type TutorTurn,
 } from '../index'
@@ -38,7 +38,7 @@ export function NoriTutor({
   const client = useMemo(() => getSharedNoriClient(apiBaseUrl), [apiBaseUrl])
   const [lesson, setLesson] = useState<{ title: string; body: string } | null>(null)
   const [llmConfigured, setLlmConfigured] = useState(false)
-  const [attempts, setAttempts] = useState<PracticeAttempt[]>([])
+  const [attempts, setAttempts] = useState<PracticeAttemptSummary[]>([])
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [turns, setTurns] = useState<TutorTurn[]>([])
   const [message, setMessage] = useState('')
@@ -68,7 +68,7 @@ export function NoriTutor({
         .catch(() => undefined)
       try {
         const [practice, tutor] = await Promise.all([
-          client.listPractice({ courseKey, lessonKey }, signal),
+          client.listPracticeSummaries({ courseKey, lessonKey }, signal),
           client.getTutor(courseKey, lessonKey, signal),
         ])
         if (signal?.aborted) return
@@ -101,7 +101,7 @@ export function NoriTutor({
       const incoming = detail?.attempts
       if (!incoming) {
         client
-          .listPractice({ courseKey, lessonKey })
+          .listPracticeSummaries({ courseKey, lessonKey })
           .then((practice) => setAttempts(practice.attempts))
           .catch(() => undefined)
         return
@@ -186,8 +186,8 @@ export function NoriTutor({
                           )}
                           {a.grading === 'unscored' && (
                             <span className="nori-badge">
-                              <IconExerciseType type={a.exerciseSnapshot.type} />
-                              <span>{a.exerciseSnapshot.type}</span>
+                              <IconExerciseType type={a.exerciseType} />
+                              <span>{a.exerciseType}</span>
                             </span>
                           )}
                           {isSingleLine && (

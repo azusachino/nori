@@ -1,0 +1,2 @@
+DROP INDEX `practice_attempts_exercise`;--> statement-breakpoint
+CREATE INDEX `practice_attempts_review` ON `practice_attempts` (`course_key`,`lesson_key`,`exercise_key`,`created_at`,`grading`,`correct`,`owner_note`);
