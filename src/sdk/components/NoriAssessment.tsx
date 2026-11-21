@@ -38,6 +38,10 @@ import { renderInlineMarkdown, renderRichText } from './markdown'
 
 export type NoriAssessmentProps = {
   courseKey: string
+  /**
+   * Lesson of inline `exercises` and of a single `bank` (overriding the bank's own lessonKey).
+   * With `banks`, only a fallback for a bank that names no lessonKey: each bank keeps its own.
+   */
   lessonKey?: string
   bank?: string
   /** Several practice banks pooled together, e.g. every lesson of a course; used instead of `bank`. */
@@ -47,8 +51,20 @@ export type NoriAssessmentProps = {
   title?: string
 }
 
-/** A bank exercise with the lesson it belongs to: the island's lessonKey, else its bank's. */
-type PoolExercise = PracticeExercise & { lessonKey: string }
+/** A bank exercise with the lesson it belongs to; (lessonKey, key) identifies it. */
+export type PoolExercise = PracticeExercise & { lessonKey: string }
+
+/**
+ * Flattens loaded banks into one pool. One bank takes the island's lessonKey if given,
+ * else its own. Pooled banks keep their own lessonKey, so lessons that reuse exercise
+ * keys (`q-1` in each) stay distinct; the island's lessonKey fills in only where a bank has none.
+ */
+export function poolBankExercises(banks: PracticeBank[], lessonKey = '', pooled = banks.length > 1): PoolExercise[] {
+  return banks.flatMap((d) => {
+    const key = pooled ? d.lessonKey || lessonKey : lessonKey || d.lessonKey
+    return (Array.isArray(d.exercises) ? d.exercises : []).map((ex) => ({ ...ex, lessonKey: key || '' }))
+  })
+}
 
 type SampleChoice = { enabled: boolean; count: number; strategy: 'random' | 'weak'; seed: string }
 
@@ -112,13 +128,10 @@ export function NoriAssessment({
     Promise.all(
       urls.map((url) =>
         fetch(url, { signal: controller.signal })
-          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Bank error (${r.status})`))))
-          .then((d: PracticeBank) =>
-            (Array.isArray(d.exercises) ? d.exercises : []).map((ex) => ({ ...ex, lessonKey: lessonKey || d.lessonKey || '' })),
-          ),
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Bank error (${r.status})`)))) as Promise<PracticeBank>,
       ),
     )
-      .then((lists) => setExercises(lists.flat()))
+      .then((loaded) => setExercises(poolBankExercises(loaded, lessonKey, banks !== undefined)))
       .catch((e) => {
         if (!controller.signal.aborted) setError(e instanceof Error ? e.message : 'Failed to load bank.')
       })

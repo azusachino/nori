@@ -167,6 +167,21 @@ describe('assessment sampling', () => {
     expect(Object.keys(await (await create(api, pool(3))).json())).toEqual(['assessment'])
   })
 
+  test('identifies pool items by lesson and exercise key', async () => {
+    const { api } = setup()
+    // Two lessons that both use q-0..q-2 sample together.
+    const res = await create(api, [...pool(3, '01-glms'), ...pool(3, '02-svms')], { count: 6, seed: 7 })
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body.sample.poolSize).toBe(6)
+    const drawn = body.assessment.items.map((i: { lessonKey: string; exerciseKey: string }) => `${i.lessonKey}/${i.exerciseKey}`)
+    expect(new Set(drawn).size).toBe(6)
+    // The same lesson and key twice is still a duplicate.
+    const dup = await create(api, [...pool(3, '01-glms'), ...pool(3, '02-svms'), pool(3, '02-svms')[1]], { count: 2 })
+    expect(dup.status).toBe(400)
+    expect((await dup.json()).error).toContain('twice')
+  })
+
   test('the weak strategy favours incorrect and due exercises over well-known ones', async () => {
     const { api } = setup()
     const items = pool(10)

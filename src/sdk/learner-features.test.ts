@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { openDatabase } from '../lib/server/database'
 import { createSidecarApi } from '../lib/server/sidecar'
 import { ExerciseAnswerField } from './components/ExerciseAnswerField'
+import { poolBankExercises } from './components/NoriAssessment'
 import { NoriProgress, progressRows } from './components/NoriProgress'
 import { NoriReviewQueue } from './components/NoriReviewQueue'
 import { NoriClient, NoriUnsupportedError, type ExerciseSnapshot, type FetchFn } from './index'
@@ -149,5 +150,33 @@ describe('progress client', () => {
     const res = await client.createSampledAssessment({ courseKey: COURSE, title: 'Quiz', mode: 'untimed', items, sample: { count: 4, strategy: 'weak', seed: 99 } })
     expect(res.sample).toEqual({ strategy: 'weak', seed: 99, count: 4, poolSize: 20 })
     expect(res.assessment.items.length).toBe(4)
+  })
+})
+
+describe('assessment over pooled banks', () => {
+  const bank = (lessonKey: string | undefined) => ({
+    courseKey: COURSE,
+    ...(lessonKey === undefined ? {} : { lessonKey }),
+    exercises: [{ key: 'q-1', ...mcq }],
+  })
+
+  test('each pooled bank keeps its own lessonKey; the island lessonKey only fills a gap', () => {
+    const pooled = poolBankExercises([bank('01-a'), bank('02-b'), bank(undefined)], '00-course')
+    expect(pooled.map((ex) => `${ex.lessonKey}/${ex.key}`)).toEqual(['01-a/q-1', '02-b/q-1', '00-course/q-1'])
+    // A single bank still takes the island's lessonKey, else its own.
+    expect(poolBankExercises([bank('01-a')], '00-course', false)[0]!.lessonKey).toBe('00-course')
+    expect(poolBankExercises([bank('01-a')], '', false)[0]!.lessonKey).toBe('01-a')
+  })
+
+  test('two lessons that both use q-1 sample together', async () => {
+    const { fetchFn } = sidecar()
+    const client = makeClient(fetchFn)
+    const items = poolBankExercises([bank('01-a'), bank('02-b')], '00-course').map((ex) => ({
+      lessonKey: ex.lessonKey,
+      exerciseKey: ex.key,
+      exerciseSnapshot: mcq,
+    }))
+    const res = await client.createSampledAssessment({ courseKey: COURSE, title: 'Quiz', mode: 'untimed', items, sample: { count: 2, seed: 1 } })
+    expect(res.assessment.items.map((i) => i.lessonKey).sort()).toEqual(['01-a', '02-b'])
   })
 })
