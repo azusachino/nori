@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 - **Course-wide assessments pool every lesson.** `<NoriAssessment banks={[...]} />` keeps each bank's own `lessonKey` on its exercises, so lessons that reuse exercise keys (`q-1` in each) sample together instead of failing with "The sample pool lists an exercise twice". With `banks`, an explicit `lessonKey` prop now only fills in for a bank that names none; with a single `bank` or inline `exercises` it still sets the lesson. The sidecar already identified pool items by `(lessonKey, exerciseKey)`; a true duplicate is still rejected. `poolBankExercises` is exported from the component module for this rule.
 
