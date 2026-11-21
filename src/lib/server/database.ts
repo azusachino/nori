@@ -14,12 +14,26 @@ export function migrate(database: Database) {
   })
 }
 
+/**
+ * Per-connection settings. WAL persists in the file, so only switch when it is
+ * not already set; busy_timeout and synchronous apply to this connection only.
+ */
+export function applyPragmas(database: Database) {
+  // Wait for a competing writer (backup, digest CLI) instead of failing with SQLITE_BUSY.
+  database.run('PRAGMA busy_timeout = 5000')
+  const mode = database.query('PRAGMA journal_mode').get() as { journal_mode: string } | null
+  if (mode?.journal_mode.toLowerCase() !== 'wal') database.run('PRAGMA journal_mode = WAL')
+  // With WAL, NORMAL is durable against application crashes and only risks the
+  // last transactions on power loss, which this single-learner store accepts.
+  database.run('PRAGMA synchronous = NORMAL')
+  database.run('PRAGMA foreign_keys = ON')
+}
+
 export function openDatabase(path: string): Database {
   mkdirSync(dirname(path), { recursive: true })
   const database = new Database(path, { create: true })
   try {
-    database.run('PRAGMA journal_mode = WAL')
-    database.run('PRAGMA foreign_keys = ON')
+    applyPragmas(database)
     migrate(database)
     return database
   } catch (error) {

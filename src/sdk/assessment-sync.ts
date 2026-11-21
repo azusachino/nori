@@ -109,21 +109,44 @@ export class AssessmentAnswerSync {
   private timer: ReturnType<typeof setTimeout> | null = null
   private queue: Promise<void> = Promise.resolve()
   private disposed = false
+  private closed = false
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly retryBaseMs: number
+  private readonly retryMaxMs: number
+  private retryDelayMs: number
 
   constructor(options: {
     client: NoriClient
     assessment: AssessmentDetail
     debounceMs?: number
+    /**
+     * Answers the learner typed earlier (by item id). Any that differ from the
+     * server's start out unsaved, so an answer whose save failed before the
+     * assessment was closed is saved when it is opened again.
+     */
+    localAnswers?: Record<string, string>
+    /** First delay before retrying answers that hit a network or server error; doubles up to retryMaxMs. */
+    retryBaseMs?: number
+    retryMaxMs?: number
     onUpdate?: (detail: AssessmentDetail) => void
     onStateChange?: (states: Record<string, AnswerSaveState>, errors: Record<string, string>) => void
   }) {
     this.client = options.client
     this.detail = options.assessment
     this.debounceMs = options.debounceMs ?? 800
+    this.retryBaseMs = options.retryBaseMs ?? 2_000
+    this.retryMaxMs = options.retryMaxMs ?? 30_000
+    this.retryDelayMs = this.retryBaseMs
     this.onUpdate = options.onUpdate ?? (() => undefined)
     this.onStateChange = options.onStateChange ?? (() => undefined)
     for (const item of this.detail.items) {
       if (item.answer !== null) this.states[item.id] = 'saved'
+    }
+    const unsaved = this.detail.items.filter(
+      (item) => options.localAnswers?.[item.id] !== undefined && options.localAnswers[item.id] !== (item.answer ?? ''),
+    )
+    if (unsaved.length && this.detail.status === 'active') {
+      for (const item of unsaved) this.setAnswer(item.id, options.localAnswers![item.id]!)
     }
   }
 
@@ -156,7 +179,7 @@ export class AssessmentAnswerSync {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     const run = this.queue.then(() => this.saveDirty())
-    this.queue = run.catch(() => undefined)
+    this.queue = run.catch(() => undefined).then(() => this.scheduleRetry())
     return run
   }
 
@@ -209,6 +232,24 @@ export class AssessmentAnswerSync {
     this.disposed = true
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
+    if (this.retryTimer) clearTimeout(this.retryTimer)
+    this.retryTimer = null
+  }
+
+  /** Retry answers in the error state with backoff, so "will retry" stays true. */
+  private scheduleRetry(): void {
+    const failing = Object.entries(this.states).some(([itemId, state]) => state === 'error' && this.dirty.has(itemId))
+    if (!failing) {
+      this.retryDelayMs = this.retryBaseMs
+      return
+    }
+    if (this.disposed || this.closed || this.retryTimer) return
+    const delay = this.retryDelayMs
+    this.retryDelayMs = Math.min(this.retryDelayMs * 2, this.retryMaxMs)
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      this.flush().catch(() => undefined)
+    }, delay)
   }
 
   private accept(detail: AssessmentDetail): AssessmentDetail {
@@ -237,10 +278,12 @@ export class AssessmentAnswerSync {
         await this.saveOne(itemId, answer)
       } catch (err) {
         if (err instanceof AssessmentClosedError) {
+          this.closed = true
           this.setItemState(itemId, 'error')
           throw err
         }
-        if (err instanceof NoriApiError && err.status >= 400 && err.status < 500) {
+        // A 409 that survived the version retry is a race, not a verdict on the answer: retry later.
+        if (err instanceof NoriApiError && err.status >= 400 && err.status < 500 && err.status !== 409) {
           // The sidecar refused this answer; show why and move on to the others.
           if (this.dirty.get(itemId) === answer) {
             this.errors[itemId] = err.message
@@ -249,7 +292,7 @@ export class AssessmentAnswerSync {
           continue
         }
         this.setItemState(itemId, this.dirty.get(itemId) === answer ? 'error' : 'pending')
-        // A sidecar error (5xx) is per item; a network failure stops this flush.
+        // A sidecar error (5xx, 409) is per item; a network failure stops this flush.
         if (err instanceof NoriApiError) continue
         throw err
       }

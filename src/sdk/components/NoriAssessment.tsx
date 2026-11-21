@@ -11,7 +11,9 @@ import {
 import {
   getSharedNoriClient,
   NoriApiError,
+  toAssessmentSummary,
   type AssessmentDetail,
+  type AssessmentSummary,
   type PracticeBank,
   type PracticeExercise,
 } from '../index'
@@ -69,11 +71,13 @@ export function NoriAssessment({
   const client = useMemo(() => getSharedNoriClient(apiBaseUrl), [apiBaseUrl])
   const [exercises, setExercises] = useState<PracticeExercise[]>(inlineExercises ?? [])
   const [llmConfigured, setLlmConfigured] = useState(false)
-  const [assessments, setAssessments] = useState<AssessmentDetail[]>([])
+  const [assessments, setAssessments] = useState<AssessmentSummary[]>([])
   const [active, setActive] = useState<AssessmentDetail | null>(null)
   const [mode, setMode] = useState<'untimed' | 'timed'>('untimed')
   const [minutes, setMinutes] = useState(15)
   const [answers, setAnswers] = useState<Record<string, string>>({})
+  const answersRef = useRef(answers)
+  answersRef.current = answers
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [saveStates, setSaveStates] = useState<Record<string, AnswerSaveState>>({})
   const [saveErrors, setSaveErrors] = useState<Record<string, string>>({})
@@ -111,7 +115,7 @@ export function NoriAssessment({
     if (detail.status !== 'active') setDeadline(null)
     else if (deadlineAt !== undefined) setDeadline(deadlineAt)
     else if (!sameAssessment) setDeadline(localDeadline(detail))
-    setAssessments((prev) => [detail, ...prev.filter((a) => a.id !== detail.id)])
+    setAssessments((prev) => [toAssessmentSummary(detail), ...prev.filter((a) => a.id !== detail.id)])
     const nextAnswers: Record<string, string> = {}
     for (const item of detail.items) {
       if (item.answer !== null) nextAnswers[item.id] = item.answer
@@ -129,7 +133,7 @@ export function NoriAssessment({
         })
         .catch(() => undefined)
       try {
-        const list = await client.listAssessments(courseKey, signal)
+        const list = await client.listAssessmentSummaries(courseKey, signal)
         if (!signal?.aborted) setAssessments(list.assessments)
       } catch {
         // The shared client tracks offline state and retries with backoff.
@@ -190,9 +194,13 @@ export function NoriAssessment({
   const activeId = active?.status === 'active' ? active.id : null
   useEffect(() => {
     if (!activeId || !active) return
+    setSaveStates({})
+    setSaveErrors({})
     const sync = new AssessmentAnswerSync({
       client,
       assessment: active,
+      // Answers typed before the assessment was last closed but never saved are saved now.
+      localAnswers: answersRef.current,
       onUpdate: (detail) => {
         if (openIdRef.current === detail.id) syncAssessment(detail)
       },
@@ -202,8 +210,6 @@ export function NoriAssessment({
       },
     })
     syncRef.current = sync
-    setSaveStates({})
-    setSaveErrors({})
     return () => {
       sync.flush().catch(() => undefined)
       sync.dispose()

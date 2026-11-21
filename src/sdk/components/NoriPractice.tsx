@@ -11,11 +11,13 @@ import {
   removeLocalDraft,
   resendLocalDrafts,
   saveLocalDraft,
+  toAttemptSummary,
   verifyCodeInBrowser,
   type CodeVerificationResult,
   type HealthStatus,
   type LocalDraft,
   type PracticeAttempt,
+  type PracticeAttemptSummary,
   type PracticeBank,
   type PracticeExercise,
   type PracticeUpdatedDetail,
@@ -49,7 +51,7 @@ export type NoriPracticeProps = {
 
 function notifyPracticeUpdated(courseKey: string, lessonKey: string, attempts: PracticeAttempt[]) {
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-    const detail: PracticeUpdatedDetail = { courseKey, lessonKey, attempts }
+    const detail: PracticeUpdatedDetail = { courseKey, lessonKey, attempts: attempts.map(toAttemptSummary) }
     window.dispatchEvent(new CustomEvent('nori:practice-updated', { detail }))
   }
 }
@@ -71,7 +73,9 @@ export function NoriPractice({
   const [hashes, setHashes] = useState<Record<string, string>>({})
   const [bankError, setBankError] = useState<string | null>(null)
   const [health, setHealth] = useState<HealthStatus | null>(null)
-  const [attempts, setAttempts] = useState<PracticeAttempt[]>([])
+  // Summaries for the list; full attempts (feedback, snapshot) only once loaded on demand.
+  const [attempts, setAttempts] = useState<PracticeAttemptSummary[]>([])
+  const [fullAttempts, setFullAttempts] = useState<Record<string, PracticeAttempt>>({})
   const [drafts, setDrafts] = useState<Record<string, LocalDraft>>(() => loadLocalDrafts(courseKey, lessonKey))
   const [inputs, setInputs] = useState<Record<string, string>>({})
   const [noteInputs, setNoteInputs] = useState<Record<string, string>>({})
@@ -136,7 +140,7 @@ export function NoriPractice({
           if (!signal?.aborted) setHealth(null)
         })
       try {
-        const data = await client.listPractice({ courseKey, lessonKey }, signal)
+        const data = await client.listPracticeSummaries({ courseKey, lessonKey }, signal)
         if (signal?.aborted) return
         setAttempts(data.attempts)
       } catch {
@@ -165,7 +169,7 @@ export function NoriPractice({
       if (cancelled) return
       setDrafts(result.drafts)
       if (result.sent.length) {
-        setAttempts((prev) => mergeAttempts(prev, result.sent))
+        rememberFull(result.sent)
         notifyPracticeUpdated(courseKey, lessonKey, result.sent)
       }
       if (Object.keys(result.failed).length) setErrorByKey((prev) => ({ ...prev, ...result.failed }))
@@ -254,7 +258,7 @@ export function NoriPractice({
         },
         answer,
       })
-      setAttempts((prev) => mergeAttempts(prev, [created]))
+      rememberFull([created])
       setDrafts(removeLocalDraft(courseKey, lessonKey, exercise.key, attemptId))
       notifyPracticeUpdated(courseKey, lessonKey, [created])
     } catch (err) {
@@ -279,35 +283,49 @@ export function NoriPractice({
     }
   }
 
-  const handleFeedback = async (attempt: PracticeAttempt) => {
+  /** Keep full attempts from a response, and their summaries in the list. */
+  const rememberFull = (full: PracticeAttempt[]) => {
+    setFullAttempts((prev) => ({ ...prev, ...Object.fromEntries(full.map((a) => [a.id, a])) }))
+    setAttempts((prev) => mergeAttempts(prev, full.map(toAttemptSummary)))
+  }
+
+  const loadFullAttempt = async (attemptId: string) => {
+    if (fullAttempts[attemptId]) return
+    setBusyKey(`load:${attemptId}`)
+    try {
+      rememberFull([await client.getAttempt(attemptId)])
+    } catch (err) {
+      setErrorByKey((prev) => ({ ...prev, [attemptId]: err instanceof Error ? err.message : 'Could not load the attempt.' }))
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  const handleFeedback = async (attempt: PracticeAttemptSummary) => {
     setBusyKey(`feedback:${attempt.id}`)
     setErrorByKey((prev) => ({ ...prev, [attempt.id]: '' }))
     try {
       const updated = await client.requestFeedback(attempt.id, attempt.version)
-      setAttempts((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+      rememberFull([updated])
       notifyPracticeUpdated(courseKey, lessonKey, [updated])
     } catch (err) {
-      if (err instanceof NoriApiError && err.attempt) {
-        setAttempts((prev) => prev.map((item) => (item.id === err.attempt!.id ? err.attempt! : item)))
-      }
+      if (err instanceof NoriApiError && err.attempt) rememberFull([err.attempt])
       setErrorByKey((prev) => ({ ...prev, [attempt.id]: err instanceof Error ? err.message : 'Feedback failed.' }))
     } finally {
       setBusyKey(null)
     }
   }
 
-  const handleCorrection = async (attempt: PracticeAttempt) => {
+  const handleCorrection = async (attempt: PracticeAttemptSummary) => {
     const note = noteInputs[attempt.id] ?? attempt.ownerNote
     setBusyKey(`correct:${attempt.id}`)
     setErrorByKey((prev) => ({ ...prev, [attempt.id]: '' }))
     try {
       const updated = await client.saveCorrection(attempt.id, note, attempt.version)
-      setAttempts((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+      rememberFull([updated])
       notifyPracticeUpdated(courseKey, lessonKey, [updated])
     } catch (err) {
-      if (err instanceof NoriApiError && err.attempt) {
-        setAttempts((prev) => prev.map((item) => (item.id === err.attempt!.id ? err.attempt! : item)))
-      }
+      if (err instanceof NoriApiError && err.attempt) rememberFull([err.attempt])
       setErrorByKey((prev) => ({ ...prev, [attempt.id]: err instanceof Error ? err.message : 'Could not save correction.' }))
     } finally {
       setBusyKey(null)
@@ -315,7 +333,31 @@ export function NoriPractice({
   }
 
   const handleCopyMarkdown = async () => {
-    const md = formatAttemptsAsMarkdown({ courseKey, lessonKey, attempts, drafts })
+    // The export needs prompts and feedback, which the list does not carry: fetch them now.
+    // Offline, fall back to what is on the page (current prompts, feedback already loaded).
+    let full: PracticeAttempt[]
+    try {
+      full = (await client.listPractice({ courseKey, lessonKey })).attempts
+    } catch {
+      full = attempts.map((summary) => {
+        const loaded = fullAttempts[summary.id]
+        if (loaded) return loaded
+        const exercise = exercises.find((ex) => ex.key === summary.exerciseKey)
+        const { exerciseType, hasFeedback: _hasFeedback, ...rest } = summary
+        return {
+          ...rest,
+          feedback: '',
+          exerciseSnapshot: {
+            type: exerciseType,
+            prompt: exercise?.prompt ?? '',
+            options: exercise?.options ?? [],
+            answer: exercise?.answer ?? '',
+            explanation: exercise?.explanation ?? '',
+          },
+        }
+      })
+    }
+    const md = formatAttemptsAsMarkdown({ courseKey, lessonKey, attempts: full, drafts })
     try {
       await navigator.clipboard.writeText(md)
       setCopied(true)
@@ -658,6 +700,7 @@ export function NoriPractice({
                 </div>
                 {exerciseAttempts.map((attempt) => {
                   const drifted = Boolean(currentHash && attempt.contentHash !== currentHash)
+                  const full = fullAttempts[attempt.id]
                   const noteValue = noteInputs[attempt.id] ?? attempt.ownerNote
                   const isSingleLine = !attempt.answer.includes('\n')
                   return (
@@ -687,7 +730,7 @@ export function NoriPractice({
                               )
                             ) : (
                               <>
-                                <IconExerciseType type={attempt.exerciseSnapshot.type} />
+                                <IconExerciseType type={attempt.exerciseType} />
                                 <span>Unscored</span>
                               </>
                             )}
@@ -717,7 +760,7 @@ export function NoriPractice({
                             <span>
                               {busyKey === `feedback:${attempt.id}`
                                 ? 'Requesting feedback…'
-                                : attempt.feedback
+                                : attempt.hasFeedback
                                   ? 'Refresh advisory feedback'
                                   : 'Ask AI for advisory feedback'}
                             </span>
@@ -725,19 +768,43 @@ export function NoriPractice({
                         )}
                       </div>
 
-                      {drifted && (
-                        <div className="nori-muted">Prompt at attempt time: {renderRichText(attempt.exerciseSnapshot.prompt)}</div>
+                      {drifted && full && (
+                        <div className="nori-muted">Prompt at attempt time: {renderRichText(full.exerciseSnapshot.prompt)}</div>
                       )}
                       {!isSingleLine && <div className="nori-attempt__answer">{renderRichText(attempt.answer)}</div>}
 
-                      {attempt.feedback && (
+                      {full?.feedback ? (
                         <div className="nori-feedback">
                           <div className="nori-feedback__header">
                             <IconSparkles />
                             <strong>Advisory AI feedback</strong>
                           </div>
-                          <div className="nori-attempt__answer">{renderRichText(attempt.feedback)}</div>
+                          <div className="nori-attempt__answer">{renderRichText(full.feedback)}</div>
                         </div>
+                      ) : (
+                        !full &&
+                        (attempt.hasFeedback || drifted) && (
+                          <div className="nori-actions">
+                            <button
+                              type="button"
+                              data-ui="nori"
+                              className="nori-btn nori-btn--sm"
+                              disabled={busyKey === `load:${attempt.id}`}
+                              onClick={() => loadFullAttempt(attempt.id)}
+                            >
+                              {attempt.hasFeedback ? <IconSparkles /> : <IconAlertTriangle />}
+                              <span>
+                                {busyKey === `load:${attempt.id}`
+                                  ? 'Loading…'
+                                  : attempt.hasFeedback
+                                    ? drifted
+                                      ? 'Show advisory feedback and prompt at attempt time'
+                                      : 'Show advisory feedback'
+                                    : 'Show prompt at attempt time'}
+                              </span>
+                            </button>
+                          </div>
+                        )
                       )}
 
                       {connectionState === 'online' && (

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   getSharedNoriClient,
-  type ReviewQueueItem,
-  type ReviewQueueResponse,
+  type ReviewQueueSummaryItem,
+  type ReviewQueueSummaryResponse,
 } from '../index'
 import {
   IconAlertTriangle,
@@ -34,7 +34,7 @@ export function NoriReviewQueue({
   title = 'Spaced recall & weak-spot queue',
 }: NoriReviewQueueProps) {
   const client = useMemo(() => getSharedNoriClient(apiBaseUrl), [apiBaseUrl])
-  const [queue, setQueue] = useState<ReviewQueueResponse | null>(null)
+  const [queue, setQueue] = useState<ReviewQueueSummaryResponse | null>(null)
   const [filter, setFilter] = useState<'due' | 'all'>('due')
   const [retryInputs, setRetryInputs] = useState<Record<string, string>>({})
   const [busyKey, setBusyKey] = useState<string | null>(null)
@@ -44,7 +44,7 @@ export function NoriReviewQueue({
   const refreshQueue = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const res = await client.getReviewQueue({ courseKey }, signal)
+        const res = await client.getReviewQueueSummary({ courseKey }, signal)
         if (signal?.aborted) return
         setQueue(res)
       } catch {
@@ -86,19 +86,21 @@ export function NoriReviewQueue({
     }
   }
 
-  const handleRetrySubmit = async (item: ReviewQueueItem) => {
+  const handleRetrySubmit = async (item: ReviewQueueSummaryItem) => {
     const key = `${item.courseKey}::${item.lessonKey}::${item.exerciseKey}`
     const answer = retryInputs[key] ?? ''
     if (!answer.trim()) return
     setBusyKey(key)
     setError(null)
     try {
+      // The queue omits the reference answer; the retry needs the full snapshot to be graded.
+      const latest = await client.getAttempt(item.latestAttempt.id)
       await client.createAttempt({
         courseKey: item.courseKey,
         lessonKey: item.lessonKey,
         exerciseKey: item.exerciseKey,
-        contentHash: item.latestAttempt.contentHash,
-        exerciseSnapshot: item.latestAttempt.exerciseSnapshot,
+        contentHash: latest.contentHash,
+        exerciseSnapshot: latest.exerciseSnapshot,
         answer,
       })
       setRetryInputs((prev) => ({ ...prev, [key]: '' }))
@@ -188,7 +190,7 @@ export function NoriReviewQueue({
           ) : (
             items.map((item) => {
               const key = `${item.courseKey}::${item.lessonKey}::${item.exerciseKey}`
-              const snap = item.latestAttempt.exerciseSnapshot
+              const snap = { ...item.latestAttempt, type: item.latestAttempt.exerciseType }
               const value = retryInputs[key] ?? ''
               const lessonHref = item.lessonKey
                 ? `/courses/${item.courseKey}/lessons/${item.lessonKey}`
