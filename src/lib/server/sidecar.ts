@@ -363,6 +363,9 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
       if (typeof body.answer !== 'string' || body.answer.length > 20000) {
         return Response.json({ error: 'Provide an answer string up to 20,000 characters.' }, { status: 400 })
       }
+      if (body.id !== undefined && (typeof body.id !== 'string' || !UUID_RE.test(body.id))) {
+        return Response.json({ error: 'id must be a UUID.' }, { status: 400 })
+      }
 
       let storedAnswer: string
       let correct: number | null
@@ -384,7 +387,19 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
         grading = 'unscored'
       }
 
-      const id = crypto.randomUUID()
+      // A client-chosen id makes the create idempotent: a retry after a lost
+      // response, or a second tab sending the same draft, returns the stored attempt.
+      const id = typeof body.id === 'string' ? body.id.toLowerCase() : crypto.randomUUID()
+      const prior = orm.select().from(practiceAttempts).where(eq(practiceAttempts.id, id)).get()
+      if (prior) {
+        if (prior.courseKey !== courseKey || prior.lessonKey !== lessonKey || prior.exerciseKey !== exerciseKey) {
+          return Response.json({ error: 'This attempt id belongs to another exercise.' }, { status: 409 })
+        }
+        if (prior.answer !== storedAnswer) {
+          return Response.json({ error: 'This attempt id was already used for a different answer.' }, { status: 409 })
+        }
+        return Response.json({ attempt: toPracticeAttempt(prior) }, { status: 200 })
+      }
       const ts = now()
       orm
         .insert(practiceAttempts)
@@ -405,6 +420,7 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
           createdAt: ts,
           updatedAt: ts,
         })
+        .onConflictDoNothing()
         .run()
       const row = orm.select().from(practiceAttempts).where(eq(practiceAttempts.id, id)).get()!
       return Response.json({ attempt: toPracticeAttempt(row) }, { status: 201 })

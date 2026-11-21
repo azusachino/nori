@@ -1,7 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
+  AssessmentAnswerSync,
+  createCountdown,
+  formatCountdown,
+  localDeadline,
+  MAX_ANSWER_CHARS,
+  openAssessment,
+  type AnswerSaveState,
+} from '../assessment-sync'
+import {
+  getSharedNoriClient,
   NoriApiError,
-  NoriClient,
   type AssessmentDetail,
   type PracticeBank,
   type PracticeExercise,
@@ -21,6 +30,7 @@ import {
   IconWifiOff,
   IconXCircle,
 } from './icons'
+import { useNoriConnection } from './connection'
 import { renderInlineMarkdown, renderRichText } from './markdown'
 
 export type NoriAssessmentProps = {
@@ -34,6 +44,20 @@ export type NoriAssessmentProps = {
 
 const OPTION_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
+/** Flush unsaved answers this close to the deadline so they land before the server finalizes. */
+const DEADLINE_FLUSH_MS = 2000
+
+const SAVE_STATE_LABEL: Record<AnswerSaveState, string> = {
+  pending: 'Unsaved changes',
+  saving: 'Saving…',
+  saved: 'Saved',
+  error: 'Not saved yet · will retry when the sidecar answers',
+  rejected: 'Not saved',
+}
+
+/** Show the character count once an answer is this close to the server limit. */
+const COUNT_FROM_CHARS = Math.floor(MAX_ANSWER_CHARS * 0.9)
+
 export function NoriAssessment({
   courseKey,
   lessonKey = '',
@@ -42,9 +66,8 @@ export function NoriAssessment({
   apiBaseUrl = '/api/nori/v1',
   title = 'Assessment',
 }: NoriAssessmentProps) {
-  const client = useMemo(() => new NoriClient({ baseUrl: apiBaseUrl }), [apiBaseUrl])
+  const client = useMemo(() => getSharedNoriClient(apiBaseUrl), [apiBaseUrl])
   const [exercises, setExercises] = useState<PracticeExercise[]>(inlineExercises ?? [])
-  const [online, setOnline] = useState<'checking' | 'online' | 'offline'>('checking')
   const [llmConfigured, setLlmConfigured] = useState(false)
   const [assessments, setAssessments] = useState<AssessmentDetail[]>([])
   const [active, setActive] = useState<AssessmentDetail | null>(null)
@@ -52,8 +75,16 @@ export function NoriAssessment({
   const [minutes, setMinutes] = useState(15)
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [notes, setNotes] = useState<Record<string, string>>({})
+  const [saveStates, setSaveStates] = useState<Record<string, AnswerSaveState>>({})
+  const [saveErrors, setSaveErrors] = useState<Record<string, string>>({})
+  const [deadline, setDeadline] = useState<number | null>(null)
+  const [remainingMs, setRemainingMs] = useState<number | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const syncRef = useRef<AssessmentAnswerSync | null>(null)
+  // Id of the assessment on screen; late responses for any other one are dropped.
+  const openIdRef = useRef<string | null>(null)
+  const idPrefix = useId()
 
   useEffect(() => {
     if (inlineExercises) {
@@ -71,32 +102,140 @@ export function NoriAssessment({
     return () => controller.abort()
   }, [bank, inlineExercises])
 
-  useEffect(() => {
-    const controller = new AbortController()
-    client
-      .health(controller.signal)
-      .then(async (h) => {
-        if (controller.signal.aborted) return
-        setLlmConfigured(h.llmConfigured)
-        setOnline('online')
-        const list = await client.listAssessments(courseKey, controller.signal)
-        if (!controller.signal.aborted) setAssessments(list.assessments)
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setOnline('offline')
-      })
-    return () => controller.abort()
-  }, [client, courseKey])
-
-  const syncAssessment = (detail: AssessmentDetail) => {
+  // Pass deadlineAt when the detail was fetched to (re)start the countdown; it is
+  // anchored at send time. Other updates for the open assessment keep its deadline.
+  const syncAssessment = useCallback((detail: AssessmentDetail, deadlineAt?: number | null) => {
+    const sameAssessment = openIdRef.current === detail.id
+    openIdRef.current = detail.id
     setActive(detail)
+    if (detail.status !== 'active') setDeadline(null)
+    else if (deadlineAt !== undefined) setDeadline(deadlineAt)
+    else if (!sameAssessment) setDeadline(localDeadline(detail))
     setAssessments((prev) => [detail, ...prev.filter((a) => a.id !== detail.id)])
     const nextAnswers: Record<string, string> = {}
     for (const item of detail.items) {
       if (item.answer !== null) nextAnswers[item.id] = item.answer
     }
     setAnswers((prev) => ({ ...nextAnswers, ...prev }))
+  }, [])
+
+  // The list call doubles as the health check; /health only adds llmConfigured.
+  const loadFromSidecar = useCallback(
+    async (signal?: AbortSignal) => {
+      client
+        .health(signal)
+        .then((h) => {
+          if (!signal?.aborted) setLlmConfigured(h.llmConfigured)
+        })
+        .catch(() => undefined)
+      try {
+        const list = await client.listAssessments(courseKey, signal)
+        if (!signal?.aborted) setAssessments(list.assessments)
+      } catch {
+        // The shared client tracks offline state and retries with backoff.
+      }
+    },
+    [client, courseKey],
+  )
+
+  const refreshOpen = useCallback(async () => {
+    const id = openIdRef.current
+    if (!id) return
+    const opened = await openAssessment(client, id)
+    if (openIdRef.current === opened.detail.id) syncAssessment(opened.detail, opened.deadline)
+  }, [client, syncAssessment])
+
+  const online = useNoriConnection(client, () => {
+    loadFromSidecar()
+    // Answers typed while offline are still queued: save them, then refresh the open
+    // assessment (it may have expired while offline and still be locked on screen).
+    const sync = syncRef.current
+    ;(sync ? sync.flush() : Promise.resolve())
+      .catch(() => undefined)
+      .then(refreshOpen)
+      .catch(() => undefined)
+  })
+
+  const handleOpen = async (assessmentId: string) => {
+    setError(null)
+    try {
+      // List entries carry a stale remainingMs; fetch fresh before starting the countdown.
+      const opened = await openAssessment(client, assessmentId)
+      syncAssessment(opened.detail, opened.deadline)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not open assessment.')
+    }
   }
+
+  const handleClose = () => {
+    openIdRef.current = null
+    setActive(null)
+  }
+
+  // Save unsaved answers if the learner closes or navigates away from the page.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const onPageHide = () => syncRef.current?.flushOnPageHide()
+    window.addEventListener('pagehide', onPageHide)
+    return () => window.removeEventListener('pagehide', onPageHide)
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    loadFromSidecar(controller.signal)
+    return () => controller.abort()
+  }, [loadFromSidecar])
+
+  // One auto-save queue per active assessment.
+  const activeId = active?.status === 'active' ? active.id : null
+  useEffect(() => {
+    if (!activeId || !active) return
+    const sync = new AssessmentAnswerSync({
+      client,
+      assessment: active,
+      onUpdate: (detail) => {
+        if (openIdRef.current === detail.id) syncAssessment(detail)
+      },
+      onStateChange: (states, errors) => {
+        setSaveStates(states)
+        setSaveErrors(errors)
+      },
+    })
+    syncRef.current = sync
+    setSaveStates({})
+    setSaveErrors({})
+    return () => {
+      sync.flush().catch(() => undefined)
+      sync.dispose()
+      if (syncRef.current === sync) syncRef.current = null
+    }
+    // Recreate only when a different assessment becomes active.
+  }, [activeId, client, syncAssessment])
+
+  // Tick from the server deadline. At expiry the server finalizes the assessment
+  // as "expired" with the answers saved so far, so lock inputs and reload it.
+  useEffect(() => {
+    if (deadline === null || !activeId) {
+      setRemainingMs(null)
+      return
+    }
+    return createCountdown({
+      deadline,
+      onTick: (ms) => {
+        setRemainingMs(ms)
+        if (ms <= DEADLINE_FLUSH_MS && syncRef.current?.hasUnsaved) syncRef.current.flush().catch(() => undefined)
+      },
+      onExpire: () => {
+        const sync = syncRef.current
+        ;(sync ? sync.flush() : Promise.resolve())
+          .catch(() => undefined)
+          .then(refreshOpen)
+          .catch((e) => setError(e instanceof Error ? e.message : 'Could not reload the expired assessment.'))
+      },
+    })
+  }, [deadline, activeId, refreshOpen])
+
+  const timeUp = remainingMs === 0
 
   const handleCreateAndStart = async () => {
     if (!exercises.length) return
@@ -114,9 +253,10 @@ export function NoriAssessment({
           exerciseSnapshot: { type: ex.type, prompt: ex.prompt, options: ex.options, answer: ex.answer, explanation: ex.explanation },
         })),
       })
+      const sentAt = Date.now()
       const started = await client.startAssessment(created.id)
       setAnswers({})
-      syncAssessment(started)
+      syncAssessment(started, localDeadline(started, sentAt))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not start assessment.')
     } finally {
@@ -124,30 +264,24 @@ export function NoriAssessment({
     }
   }
 
-  const handleSaveItem = async (itemId: string) => {
-    if (!active) return
-    setBusy(`save:${itemId}`)
-    setError(null)
-    try {
-      const updated = await client.saveAssessmentAnswer(active.id, itemId, answers[itemId] ?? '', active.version)
-      syncAssessment(updated)
-    } catch (e) {
-      if (e instanceof NoriApiError && e.assessment) syncAssessment(e.assessment)
-      setError(e instanceof Error ? e.message : 'Could not save answer.')
-    } finally {
-      setBusy(null)
-    }
+  const handleAnswerChange = (itemId: string, answer: string) => {
+    setAnswers((prev) => ({ ...prev, [itemId]: answer }))
+    syncRef.current?.setAnswer(itemId, answer)
+  }
+
+  const handleAnswerBlur = () => {
+    syncRef.current?.flush().catch((e) => setError(e instanceof Error ? e.message : 'Could not save answer.'))
   }
 
   const handleSubmit = async () => {
-    if (!active) return
+    const sync = syncRef.current
+    if (!sync) return
     setBusy('submit')
     setError(null)
     try {
-      const finalized = await client.submitAssessment(active.id, active.version)
-      syncAssessment(finalized)
+      // submit() saves every pending answer first, so nothing is graded blank by accident.
+      await sync.submit()
     } catch (e) {
-      if (e instanceof NoriApiError && e.assessment) syncAssessment(e.assessment)
       setError(e instanceof Error ? e.message : 'Could not submit assessment.')
     } finally {
       setBusy(null)
@@ -160,9 +294,9 @@ export function NoriAssessment({
     setError(null)
     try {
       const updated = await client.requestAssessmentFeedback(active.id, itemId, active.version)
-      syncAssessment(updated)
+      if (openIdRef.current === updated.id) syncAssessment(updated)
     } catch (e) {
-      if (e instanceof NoriApiError && e.assessment) syncAssessment(e.assessment)
+      if (e instanceof NoriApiError && e.assessment && openIdRef.current === e.assessment.id) syncAssessment(e.assessment)
       setError(e instanceof Error ? e.message : 'Feedback failed.')
     } finally {
       setBusy(null)
@@ -175,9 +309,9 @@ export function NoriAssessment({
     setError(null)
     try {
       const updated = await client.saveAssessmentCorrection(active.id, itemId, notes[itemId] ?? '', active.version)
-      syncAssessment(updated)
+      if (openIdRef.current === updated.id) syncAssessment(updated)
     } catch (e) {
-      if (e instanceof NoriApiError && e.assessment) syncAssessment(e.assessment)
+      if (e instanceof NoriApiError && e.assessment && openIdRef.current === e.assessment.id) syncAssessment(e.assessment)
       setError(e instanceof Error ? e.message : 'Could not save correction.')
     } finally {
       setBusy(null)
@@ -196,7 +330,11 @@ export function NoriAssessment({
         <span className={`nori-badge ${online === 'online' ? 'nori-badge--online' : 'nori-badge--warn'}`} data-nori-status={online}>
           {online === 'online' ? <IconWifi /> : <IconWifiOff />}
           <span>
-            {online === 'online' ? 'Nori sidecar connected' : online === 'offline' ? 'Offline · assessments require sidecar' : 'Checking sidecar…'}
+            {online === 'online'
+              ? 'Nori sidecar connected'
+              : online === 'offline'
+                ? 'Offline · retrying; answers save when the sidecar is back'
+                : 'Checking sidecar…'}
           </span>
         </span>
       </header>
@@ -219,6 +357,7 @@ export function NoriAssessment({
               <input
                 type="number"
                 data-ui="nori"
+                aria-label="Time limit in minutes"
                 className="nori-input-inline"
                 min={1}
                 max={480}
@@ -243,7 +382,7 @@ export function NoriAssessment({
               <p className="nori-muted">Previous assessments ({assessments.length})</p>
               <div className="nori-actions">
                 {assessments.map((a) => (
-                  <button key={a.id} type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => syncAssessment(a)}>
+                  <button key={a.id} type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => handleOpen(a.id)}>
                     <IconClipboardCheck />
                     <span>
                       {a.title} · {a.status}
@@ -262,13 +401,13 @@ export function NoriAssessment({
             <strong>{active.title}</strong>
             <div className="nori-practice__meta">
               <span className="nori-badge">{active.status}</span>
-              {active.remainingMs !== null && (
-                <span className="nori-badge">
+              {active.status === 'active' && remainingMs !== null && (
+                <span className={`nori-badge${remainingMs <= 60_000 ? ' nori-badge--warn' : ''}`} role="timer" aria-live="off">
                   <IconClock />
-                  <span>{Math.ceil(active.remainingMs / 1000)}s left</span>
+                  <span>{timeUp ? 'Time is up' : `${formatCountdown(remainingMs)} left`}</span>
                 </span>
               )}
-              <button type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => setActive(null)}>
+              <button type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={handleClose}>
                 <IconChevronLeft />
                 <span>All assessments</span>
               </button>
@@ -277,6 +416,7 @@ export function NoriAssessment({
 
           {active.items.map((item, idx) => {
             const bankEx = exercises.find((e) => e.key === item.exerciseKey)
+            const promptId = `${idPrefix}-prompt-${idx}`
             return (
               <div key={item.id} className="nori-attempt">
                 <div className="nori-card__top">
@@ -317,15 +457,17 @@ export function NoriAssessment({
                 </div>
 
                 {bankEx?.promptHtml ? (
-                  <div className="nori-card__prompt" dangerouslySetInnerHTML={{ __html: bankEx.promptHtml }} />
+                  <div id={promptId} className="nori-card__prompt" dangerouslySetInnerHTML={{ __html: bankEx.promptHtml }} />
                 ) : (
-                  <div className="nori-card__prompt">{renderRichText(item.prompt)}</div>
+                  <div id={promptId} className="nori-card__prompt">
+                    {renderRichText(item.prompt)}
+                  </div>
                 )}
 
                 {active.status === 'active' ? (
                   <>
                     {item.type === 'multiple_choice' ? (
-                      <div className="nori-options">
+                      <div className="nori-options" role="radiogroup" aria-labelledby={promptId}>
                         {item.options.map((opt, optIdx) => {
                           const isSelected = (answers[item.id] ?? '') === opt
                           return (
@@ -338,7 +480,9 @@ export function NoriAssessment({
                                 data-ui="nori"
                                 name={`assess-${active.id}-${item.id}`}
                                 checked={isSelected}
-                                onChange={() => setAnswers((prev) => ({ ...prev, [item.id]: opt }))}
+                                disabled={timeUp}
+                                onChange={() => handleAnswerChange(item.id, opt)}
+                                onBlur={handleAnswerBlur}
                               />
                               <span className="nori-option__key" aria-hidden="true">
                                 {OPTION_KEYS[optIdx] ?? optIdx + 1}
@@ -354,24 +498,31 @@ export function NoriAssessment({
                       </div>
                     ) : (
                       <textarea
+                        aria-labelledby={promptId}
                         data-ui="nori"
                         className={`nori-textarea${item.type === 'code' ? ' nori-textarea--code' : ''}`}
                         value={answers[item.id] ?? ''}
-                        onChange={(e) => setAnswers((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                        maxLength={MAX_ANSWER_CHARS}
+                        readOnly={timeUp}
+                        onChange={(e) => handleAnswerChange(item.id, e.target.value)}
+                        onBlur={handleAnswerBlur}
                       />
                     )}
-                    <div className="nori-actions">
-                      <button
-                        type="button"
-                        data-ui="nori"
-                        className="nori-btn nori-btn--sm"
-                        disabled={busy === `save:${item.id}`}
-                        onClick={() => handleSaveItem(item.id)}
+                    {item.type !== 'multiple_choice' && (answers[item.id]?.length ?? 0) >= COUNT_FROM_CHARS && (
+                      <p className="nori-muted" data-nori-char-count>
+                        {(answers[item.id]?.length ?? 0).toLocaleString()} / {MAX_ANSWER_CHARS.toLocaleString()} characters
+                      </p>
+                    )}
+                    {saveStates[item.id] && (
+                      <p
+                        className={saveStates[item.id] === 'rejected' ? 'nori-error' : 'nori-muted'}
+                        data-nori-save-state={saveStates[item.id]}
+                        aria-live="polite"
                       >
-                        <IconBookmark />
-                        <span>{busy === `save:${item.id}` ? 'Saving…' : 'Save answer'}</span>
-                      </button>
-                    </div>
+                        {SAVE_STATE_LABEL[saveStates[item.id]!]}
+                        {saveStates[item.id] === 'rejected' && saveErrors[item.id] ? `: ${saveErrors[item.id]}` : ''}
+                      </p>
+                    )}
                   </>
                 ) : (
                   <>
@@ -425,6 +576,7 @@ export function NoriAssessment({
                         data-ui="nori"
                         className="nori-input-inline"
                         placeholder="Correction note…"
+                        aria-label={`Correction note for item ${idx + 1}`}
                         value={notes[item.id] ?? item.result?.ownerNote ?? ''}
                         onChange={(e) => setNotes((prev) => ({ ...prev, [item.id]: e.target.value }))}
                       />
@@ -447,7 +599,7 @@ export function NoriAssessment({
 
           {active.status === 'active' && (
             <div className="nori-actions">
-              <button type="button" data-ui="nori" className="nori-btn nori-btn--primary" disabled={busy === 'submit'} onClick={handleSubmit}>
+              <button type="button" data-ui="nori" className="nori-btn nori-btn--primary" disabled={busy === 'submit' || timeUp} onClick={handleSubmit}>
                 <IconSend />
                 <span>{busy === 'submit' ? 'Submitting…' : 'Submit assessment'}</span>
               </button>

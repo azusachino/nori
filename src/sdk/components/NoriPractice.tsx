@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import {
   checkDeterministicExercise,
   computeContentHash,
   formatAttemptsAsMarkdown,
+  getSharedNoriClient,
   isDeterministicExercise,
   loadLocalDrafts,
+  mergeAttempts,
   NoriApiError,
-  NoriClient,
   removeLocalDraft,
+  resendLocalDrafts,
   saveLocalDraft,
   verifyCodeInBrowser,
   type CodeVerificationResult,
@@ -16,7 +18,9 @@ import {
   type PracticeAttempt,
   type PracticeBank,
   type PracticeExercise,
+  type PracticeUpdatedDetail,
 } from '../index'
+import { useNoriConnection } from './connection'
 import {
   IconAlertTriangle,
   IconBookOpen,
@@ -43,9 +47,10 @@ export type NoriPracticeProps = {
   title?: string
 }
 
-function notifyPracticeUpdated(courseKey: string, lessonKey: string) {
+function notifyPracticeUpdated(courseKey: string, lessonKey: string, attempts: PracticeAttempt[]) {
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
-    window.dispatchEvent(new CustomEvent('nori:practice-updated', { detail: { courseKey, lessonKey } }))
+    const detail: PracticeUpdatedDetail = { courseKey, lessonKey, attempts }
+    window.dispatchEvent(new CustomEvent('nori:practice-updated', { detail }))
   }
 }
 
@@ -59,13 +64,13 @@ export function NoriPractice({
   apiBaseUrl = '/api/nori/v1',
   title = 'Practice',
 }: NoriPracticeProps) {
-  const client = useMemo(() => new NoriClient({ baseUrl: apiBaseUrl }), [apiBaseUrl])
+  const client = useMemo(() => getSharedNoriClient(apiBaseUrl), [apiBaseUrl])
+  const idPrefix = useId()
 
   const [exercises, setExercises] = useState<PracticeExercise[]>(inlineExercises ?? [])
   const [hashes, setHashes] = useState<Record<string, string>>({})
   const [bankError, setBankError] = useState<string | null>(null)
   const [health, setHealth] = useState<HealthStatus | null>(null)
-  const [connectionState, setConnectionState] = useState<'checking' | 'online' | 'offline'>('checking')
   const [attempts, setAttempts] = useState<PracticeAttempt[]>([])
   const [drafts, setDrafts] = useState<Record<string, LocalDraft>>(() => loadLocalDrafts(courseKey, lessonKey))
   const [inputs, setInputs] = useState<Record<string, string>>({})
@@ -119,30 +124,56 @@ export function NoriPractice({
     }
   }, [exercises])
 
-  const refreshOnlineState = useCallback(
+  // A successful data call is the health check; /health only adds llmConfigured.
+  const loadFromSidecar = useCallback(
     async (signal?: AbortSignal) => {
+      client
+        .health(signal)
+        .then((status) => {
+          if (!signal?.aborted) setHealth(status)
+        })
+        .catch(() => {
+          if (!signal?.aborted) setHealth(null)
+        })
       try {
-        const status = await client.health(signal)
-        if (signal?.aborted) return
-        setHealth(status)
-        setConnectionState('online')
         const data = await client.listPractice({ courseKey, lessonKey }, signal)
         if (signal?.aborted) return
         setAttempts(data.attempts)
       } catch {
-        if (signal?.aborted) return
-        setHealth(null)
-        setConnectionState('offline')
+        // The shared client tracks offline state and retries with backoff.
       }
     },
     [client, courseKey, lessonKey],
   )
 
+  const connectionState = useNoriConnection(client, () => {
+    loadFromSidecar()
+  })
+
   useEffect(() => {
     const controller = new AbortController()
-    refreshOnlineState(controller.signal)
+    loadFromSidecar(controller.signal)
     return () => controller.abort()
-  }, [refreshOnlineState])
+  }, [loadFromSidecar])
+
+  // Re-send drafts saved while offline once the sidecar answers and the bank is loaded.
+  useEffect(() => {
+    if (connectionState !== 'online' || !exercises.length) return
+    if (!Object.keys(loadLocalDrafts(courseKey, lessonKey)).length) return
+    let cancelled = false
+    resendLocalDrafts({ client, courseKey, lessonKey, exercises }).then((result) => {
+      if (cancelled) return
+      setDrafts(result.drafts)
+      if (result.sent.length) {
+        setAttempts((prev) => mergeAttempts(prev, result.sent))
+        notifyPracticeUpdated(courseKey, lessonKey, result.sent)
+      }
+      if (Object.keys(result.failed).length) setErrorByKey((prev) => ({ ...prev, ...result.failed }))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [client, connectionState, courseKey, lessonKey, exercises])
 
   const toggleMultiOption = (exerciseKey: string, option: string) => {
     setInputs((prev) => {
@@ -166,8 +197,10 @@ export function NoriPractice({
     }
   }
 
-  const submitAnswer = async (exercise: PracticeExercise, overrideAnswer?: string) => {
-    const answer = overrideAnswer ?? inputs[exercise.key] ?? ''
+  const submitAnswer = async (exercise: PracticeExercise, fromDraft?: LocalDraft) => {
+    const answer = fromDraft?.answer ?? inputs[exercise.key] ?? ''
+    // One id per attempt: a retry or re-sent draft with this id is recorded once.
+    const attemptId = fromDraft?.attemptId ?? crypto.randomUUID()
     const isValid =
       exercise.type === 'multiple_choice'
         ? exercise.options.includes(answer)
@@ -194,6 +227,7 @@ export function NoriPractice({
     if (connectionState !== 'online') {
       const localDraft: LocalDraft = {
         exerciseKey: exercise.key,
+        attemptId,
         answer,
         updatedAt: Date.now(),
         correct: deterministic ? (checkDeterministicExercise(exercise, answer) ? 1 : 0) : null,
@@ -206,6 +240,7 @@ export function NoriPractice({
     try {
       const contentHash = hashes[exercise.key] ?? (await computeContentHash(exercise))
       const created = await client.createAttempt({
+        id: attemptId,
         courseKey,
         lessonKey,
         exerciseKey: exercise.key,
@@ -219,16 +254,19 @@ export function NoriPractice({
         },
         answer,
       })
-      setAttempts((prev) => [...prev, created])
-      setDrafts(removeLocalDraft(courseKey, lessonKey, exercise.key))
-      notifyPracticeUpdated(courseKey, lessonKey)
+      setAttempts((prev) => mergeAttempts(prev, [created]))
+      setDrafts(removeLocalDraft(courseKey, lessonKey, exercise.key, attemptId))
+      notifyPracticeUpdated(courseKey, lessonKey, [created])
     } catch (err) {
-      if (err instanceof NoriApiError) {
+      // A 4xx is the sidecar refusing this answer; anything else may be transient, so keep a draft.
+      if (err instanceof NoriApiError && err.status < 500) {
         setErrorByKey((prev) => ({ ...prev, [exercise.key]: err.message }))
       } else {
-        setConnectionState('offline')
+        // The sidecar may have recorded it before the connection failed; keep the
+        // same id so the re-send returns that attempt instead of adding another.
         const localDraft: LocalDraft = {
           exerciseKey: exercise.key,
+          attemptId,
           answer,
           updatedAt: Date.now(),
           correct: deterministic ? (checkDeterministicExercise(exercise, answer) ? 1 : 0) : null,
@@ -247,7 +285,7 @@ export function NoriPractice({
     try {
       const updated = await client.requestFeedback(attempt.id, attempt.version)
       setAttempts((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
-      notifyPracticeUpdated(courseKey, lessonKey)
+      notifyPracticeUpdated(courseKey, lessonKey, [updated])
     } catch (err) {
       if (err instanceof NoriApiError && err.attempt) {
         setAttempts((prev) => prev.map((item) => (item.id === err.attempt!.id ? err.attempt! : item)))
@@ -265,7 +303,7 @@ export function NoriPractice({
     try {
       const updated = await client.saveCorrection(attempt.id, note, attempt.version)
       setAttempts((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
-      notifyPracticeUpdated(courseKey, lessonKey)
+      notifyPracticeUpdated(courseKey, lessonKey, [updated])
     } catch (err) {
       if (err instanceof NoriApiError && err.attempt) {
         setAttempts((prev) => prev.map((item) => (item.id === err.attempt!.id ? err.attempt! : item)))
@@ -343,6 +381,7 @@ export function NoriPractice({
         const latestCorrect = latestAttempt ? latestAttempt.correct : localDraft?.correct
         const deterministic = isDeterministicExercise(exercise.type)
         const codeVerify = codeResults[exercise.key]
+        const promptId = `${idPrefix}-prompt-${exIdx}`
 
         const expectedSet =
           exercise.type === 'multiple_select'
@@ -397,13 +436,15 @@ export function NoriPractice({
             </div>
 
             {exercise.promptHtml ? (
-              <div className="nori-card__prompt" dangerouslySetInnerHTML={{ __html: exercise.promptHtml }} />
+              <div id={promptId} className="nori-card__prompt" dangerouslySetInnerHTML={{ __html: exercise.promptHtml }} />
             ) : (
-              <div className="nori-card__prompt">{renderRichText(exercise.prompt)}</div>
+              <div id={promptId} className="nori-card__prompt">
+                {renderRichText(exercise.prompt)}
+              </div>
             )}
 
             {exercise.type === 'multiple_choice' ? (
-              <div className="nori-options" role="radiogroup" aria-label={exercise.prompt}>
+              <div className="nori-options" role="radiogroup" aria-labelledby={promptId}>
                 {exercise.options.map((option, optIdx) => {
                   const isSelected = value === option
                   const isCorrectOption = hasSubmitted && option === exercise.answer
@@ -446,7 +487,7 @@ export function NoriPractice({
                 })}
               </div>
             ) : exercise.type === 'multiple_select' ? (
-              <div className="nori-options" role="group" aria-label={exercise.prompt}>
+              <div className="nori-options" role="group" aria-labelledby={promptId}>
                 {exercise.options.map((option, optIdx) => {
                   const isSelected = Boolean(currentPickedSet?.has(option))
                   const isCorrectOption = hasSubmitted && Boolean(expectedSet?.has(option))
@@ -491,6 +532,7 @@ export function NoriPractice({
                 type="text"
                 data-ui="nori"
                 className="nori-input-inline"
+                aria-labelledby={promptId}
                 style={{ width: '100%', height: '38px' }}
                 placeholder="Type exact answer…"
                 value={value}
@@ -500,7 +542,8 @@ export function NoriPractice({
               <textarea
                 data-ui="nori"
                 className={`nori-textarea${exercise.type === 'code' ? ' nori-textarea--code' : ''}`}
-                placeholder={exercise.type === 'code' ? 'Write your code attempt (in-browser verification ready)…' : 'Write your explanation in your own words…'}
+                aria-labelledby={promptId}
+                placeholder={exercise.type === 'code' ? 'Write your code attempt…' : 'Write your explanation in your own words…'}
                 value={value}
                 onChange={(e) => setInputs((prev) => ({ ...prev, [exercise.key]: e.target.value }))}
               />
@@ -535,7 +578,7 @@ export function NoriPractice({
                   onClick={() => handleVerifyCode(exercise)}
                 >
                   <IconCode />
-                  <span>{busyKey === `verify:${exercise.key}` ? 'Verifying…' : 'Verify code'}</span>
+                  <span>{busyKey === `verify:${exercise.key}` ? 'Checking…' : 'Check code'}</span>
                 </button>
               )}
 
@@ -545,7 +588,7 @@ export function NoriPractice({
                   data-ui="nori"
                   className="nori-btn"
                   disabled={busyKey === `submit:${exercise.key}`}
-                  onClick={() => submitAnswer(exercise, localDraft.answer)}
+                  onClick={() => submitAnswer(exercise, localDraft)}
                 >
                   <IconSend />
                   <span>Submit saved draft to Nori</span>
@@ -558,7 +601,7 @@ export function NoriPractice({
                 <div className="nori-card__top">
                   <div className="nori-feedback__header">
                     <IconCode />
-                    <strong>In-browser code verification</strong>
+                    <strong>{codeVerify.executed ? 'In-browser code run' : 'Heuristic check, not executed'}</strong>
                   </div>
                   <span className={`nori-badge ${codeVerify.passed ? 'nori-badge--correct' : 'nori-badge--incorrect'}`}>
                     {codeVerify.passed ? <IconCheckCircle /> : <IconXCircle />}
@@ -704,6 +747,7 @@ export function NoriPractice({
                             data-ui="nori"
                             className="nori-input-inline"
                             placeholder="Record correction or takeaway…"
+                            aria-label="Correction or takeaway note"
                             value={noteValue}
                             onChange={(e) => setNoteInputs((prev) => ({ ...prev, [attempt.id]: e.target.value }))}
                           />

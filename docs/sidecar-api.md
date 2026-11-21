@@ -39,7 +39,7 @@ All responses are JSON. `GET` endpoints set `Cache-Control: no-store`.
 ### Practice
 
 - `GET <basePath>/v1/practice?courseKey=<key>[&lessonKey=<key>][&exerciseKey=<key>]` — lists recorded `practice_attempts` in chronological order (`created_at ASC`).
-- `POST <basePath>/v1/practice/attempts` — records an attempt immediately (64 KB body limit), grading `multiple_choice` deterministically (`correct: 1 | 0`) and storing `written`/`code` as `grading: "unscored"`, `correct: null`.
+- `POST <basePath>/v1/practice/attempts` — records an attempt immediately (64 KB body limit), grading `multiple_choice` deterministically (`correct: 1 | 0`) and storing `written`/`code` as `grading: "unscored"`, `correct: null`. An optional client-generated `id` (UUID) makes the call idempotent: repeating it returns the stored attempt (`200`) instead of inserting a second one (`409` if that id belongs to another exercise).
 - `POST <basePath>/v1/practice/attempts/{attemptId}/feedback` — requests advisory LLM feedback (`advisory: true`) for a `written` or `code` attempt outside SQLite transactions with pre/post `version` optimistic concurrency (`409` on conflict, `502` on provider failure).
 - `POST <basePath>/v1/practice/attempts/{attemptId}/correct` — records or updates `ownerNote` with `expectedVersion` (`409` on conflict).
 

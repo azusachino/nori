@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  NoriClient,
+  getSharedNoriClient,
   type ReviewQueueItem,
   type ReviewQueueResponse,
 } from '../index'
@@ -17,6 +17,7 @@ import {
   IconWifiOff,
   IconXCircle,
 } from './icons'
+import { useNoriConnection } from './connection'
 import { renderInlineMarkdown, renderRichText } from './markdown'
 
 export type NoriReviewQueueProps = {
@@ -32,8 +33,7 @@ export function NoriReviewQueue({
   apiBaseUrl = '/api/nori/v1',
   title = 'Spaced recall & weak-spot queue',
 }: NoriReviewQueueProps) {
-  const client = useMemo(() => new NoriClient({ baseUrl: apiBaseUrl }), [apiBaseUrl])
-  const [online, setOnline] = useState<'checking' | 'online' | 'offline'>('checking')
+  const client = useMemo(() => getSharedNoriClient(apiBaseUrl), [apiBaseUrl])
   const [queue, setQueue] = useState<ReviewQueueResponse | null>(null)
   const [filter, setFilter] = useState<'due' | 'all'>('due')
   const [retryInputs, setRetryInputs] = useState<Record<string, string>>({})
@@ -47,13 +47,16 @@ export function NoriReviewQueue({
         const res = await client.getReviewQueue({ courseKey }, signal)
         if (signal?.aborted) return
         setQueue(res)
-        setOnline('online')
       } catch {
-        if (!signal?.aborted) setOnline('offline')
+        // The shared client tracks offline state and retries with backoff.
       }
     },
     [client, courseKey],
   )
+
+  const online = useNoriConnection(client, () => {
+    refreshQueue()
+  })
 
   useEffect(() => {
     const controller = new AbortController()

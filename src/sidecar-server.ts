@@ -11,6 +11,9 @@ const handle = createSidecarApi(db, { basePath })
 const server = Bun.serve({
   hostname,
   port,
+  // Bun closes idle connections after 10 s by default, which would cut off LLM
+  // feedback and tutor calls; the provider gets up to 90 s (ai.ts), so allow 120 s.
+  idleTimeout: 120,
   fetch: handle,
 })
 
