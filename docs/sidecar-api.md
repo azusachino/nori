@@ -46,7 +46,7 @@ All responses are JSON. `GET` endpoints set `Cache-Control: no-store`.
 
 ### Health
 
-- `GET <basePath>/v1/health` → `{ "ok": true, "apiVersion": 1, "llmConfigured": true }`
+- `GET <basePath>/v1/health` → `{ "ok": true, "apiVersion": 1, "llmConfigured": true, "features": ["tutor-stream"] }`. `features` lists optional endpoints added within v1; a client checks it before calling one, and treats a missing `features` (an older sidecar) as none.
 
 ### Practice
 
@@ -69,8 +69,18 @@ All responses are JSON. `GET` endpoints set `Cache-Control: no-store`.
 
 ### Contextual Tutor
 
-- `GET <basePath>/v1/tutor?courseKey=<key>&lessonKey=<key>` — returns `{ courseKey, lessonKey, contextLimit: 120000, revision, turns }`.
-- `POST <basePath>/v1/tutor` — accepts `{ courseKey, lessonKey, lessonTitle, lessonText, attemptIds?, message }` (256 KB body limit), validates that all `attemptIds` belong to `(courseKey, lessonKey)`, frames lesson text and attempts as untrusted data, deduplicates lesson prose by SHA-256 in `sidecar_tutor_lessons`, enforces the 120,000-character context budget, and checks turn `revision` (`409` on concurrent write).
+- `GET <basePath>/v1/tutor?courseKey=<key>&lessonKey=<key>` — returns `{ courseKey, lessonKey, contextLimit: 120000, historyLimit: { maxTurns: 12, maxChars: 24000 }, revision, turns }`.
+- `POST <basePath>/v1/tutor` — accepts `{ courseKey, lessonKey, lessonTitle, lessonText, attemptIds?, message }` (256 KB body limit), validates that all `attemptIds` belong to `(courseKey, lessonKey)`, frames lesson text and attempts as untrusted data, deduplicates lesson prose by SHA-256 in `sidecar_tutor_lessons`, enforces the 120,000-character context budget, and checks turn `revision` (`409` on concurrent write). Returns `{ courseKey, lessonKey, revision, context, turns }` once the whole reply is in. If the client disconnects, the model request is cancelled and nothing is saved.
+- `POST <basePath>/v1/tutor/stream` (feature `tutor-stream`) — the same request and validation, answered as Server-Sent Events (`text/event-stream`). A request that fails validation gets the usual JSON error and status before any stream starts. Otherwise the status is `200` and the events are:
+  - `start` — `{ context }`, the context metadata of this exchange (below), before the first token.
+  - `delta` — `{ text }`, the next piece of the reply.
+  - `done` — the `POST /v1/tutor` response body, sent after the exchange is saved. The saved reply is the streamed text, trimmed.
+  - `error` — `{ status, error }`: `502` for a provider failure (also after some deltas), `409` when another exchange was saved meanwhile. Nothing is saved.
+  - Comment lines (`: ping`) every 15 s keep proxies from closing the connection while the model thinks.
+
+  Closing the connection (the island's Cancel button) aborts the model request, and nothing is saved. The provider may stay silent for 90 s between chunks.
+
+History sent to the model: the system prompt, the lesson text with the selected attempts, then the most recent turns, at most `historyLimit.maxTurns` turns and `historyLimit.maxChars` characters and within the 120,000-character budget, then the new message. History never starts with an assistant reply. Each saved turn's `contextMeta` (and the `context` of a reply) records `contextChars`, `historyTurnsIncluded` and `historyTurnsDropped`, the count of older turns left out.
 
 ### Recall
 
