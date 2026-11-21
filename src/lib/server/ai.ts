@@ -79,31 +79,46 @@ export async function* completeStream(messages: Message[], options: StreamOption
     let length = 0
     let reasoning = ''
     let finished = false
-    while (!finished) {
+    // One SSE line: the text it adds, or null. A stream is complete only on `[DONE]` or a
+    // finish_reason; an in-band error or an early EOF is a failure, never a finished reply.
+    const readLine = (raw: string): string | null => {
+      const line = raw.replace(/\r$/, '')
+      if (!line.startsWith('data:')) return null
+      const payload = line.slice(5).trim()
+      if (payload === '[DONE]') { finished = true; return null }
+      let chunk: { error?: unknown; choices?: { finish_reason?: unknown; delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown } }[] }
+      try { chunk = JSON.parse(payload) } catch { return null }
+      if (chunk.error) throw new ModelError('The model provider reported an error mid-reply. Please retry.')
+      const choice = chunk.choices?.[0]
+      if (typeof choice?.finish_reason === 'string' && choice.finish_reason) finished = true
+      const delta = choice?.delta
+      if (typeof delta?.content === 'string' && delta.content) return delta.content
+      const thought = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : typeof delta?.reasoning === 'string' ? delta.reasoning : ''
+      if (thought && reasoning.length <= REPLY_LIMIT) reasoning += thought
+      return null
+    }
+    let streamEnded = false
+    while (!finished && !streamEnded) {
       const { done, value } = await reader.read()
-      if (done) break
-      touch()
-      buffer += value
+      if (done) {
+        // The last line may lack its newline.
+        streamEnded = true
+        buffer += '\n'
+      } else {
+        touch()
+        buffer += value
+      }
       let newline: number
-      while ((newline = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, newline).replace(/\r$/, '')
+      while (!finished && (newline = buffer.indexOf('\n')) >= 0) {
+        const text = readLine(buffer.slice(0, newline))
         buffer = buffer.slice(newline + 1)
-        if (!line.startsWith('data:')) continue
-        const payload = line.slice(5).trim()
-        if (payload === '[DONE]') { finished = true; break }
-        let chunk: { choices?: { delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown } }[] }
-        try { chunk = JSON.parse(payload) } catch { continue }
-        const delta = chunk.choices?.[0]?.delta
-        if (typeof delta?.content === 'string' && delta.content) {
-          length += delta.content.length
-          if (length > REPLY_LIMIT) throw new ModelError('The model reply is too long. Ask a narrower question.')
-          yield delta.content
-        } else {
-          const thought = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : typeof delta?.reasoning === 'string' ? delta.reasoning : ''
-          if (thought && reasoning.length <= REPLY_LIMIT) reasoning += thought
-        }
+        if (text === null) continue
+        length += text.length
+        if (length > REPLY_LIMIT) throw new ModelError('The model reply is too long. Ask a narrower question.')
+        yield text
       }
     }
+    if (!finished) throw new ModelError('The model reply was cut off. Please retry.')
     if (length === 0) {
       if (!reasoning.trim() || reasoning.length > REPLY_LIMIT) throw new ModelError('The model returned an incomplete or invalid response. Please retry.')
       yield reasoning

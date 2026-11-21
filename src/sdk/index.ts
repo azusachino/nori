@@ -763,7 +763,8 @@ export class NoriClient {
         }
         if (chunk.done) break
         touch()
-        buffer += chunk.value.replace(/\r\n/g, '\n')
+        // Normalize after joining, so a CRLF split across two chunks still becomes one LF.
+        buffer = (buffer + chunk.value).replace(/\r\n/g, '\n')
         let end: number
         while ((end = buffer.indexOf('\n\n')) >= 0) {
           const block = buffer.slice(0, end)
@@ -780,6 +781,7 @@ export class NoriClient {
           else if (event === 'delta' && typeof data.text === 'string') handlers.onDelta?.(data.text)
           else if (event === 'done') {
             await reader.cancel().catch(() => undefined)
+            if (!Array.isArray(data.turns)) throw new NoriApiError('The tutor returned an invalid reply.', 502)
             return data as unknown as TutorSendResult
           } else if (event === 'error') {
             await reader.cancel().catch(() => undefined)

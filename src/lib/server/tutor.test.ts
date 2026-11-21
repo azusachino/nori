@@ -260,6 +260,27 @@ describe('provider streaming (completeStream)', () => {
     expect(body.stream).toBe(true)
   })
 
+  const collect = async () => {
+    const out: string[] = []
+    for await (const delta of completeStream(messages)) out.push(delta)
+    return out
+  }
+
+  test('fails, rather than finishing, when the provider reports an error mid-reply', async () => {
+    fakeProvider(() => sse(['data: {"choices":[{"delta":{"content":"Half"}}]}\n\n', 'data: {"error":{"message":"overloaded"}}\n\n']))
+    await expect(collect()).rejects.toThrow(/error mid-reply/)
+  })
+
+  test('fails when the stream ends without [DONE] or a finish_reason', async () => {
+    fakeProvider(() => sse(['data: {"choices":[{"delta":{"content":"Partial ans"}}]}\n\n']))
+    await expect(collect()).rejects.toThrow(/cut off/)
+  })
+
+  test('reads a final line without its newline, and accepts finish_reason as the end', async () => {
+    fakeProvider(() => sse(['data: {"choices":[{"delta":{"content":"A"}}]}\n\n', 'data: {"choices":[{"delta":{"content":"B"},"finish_reason":"stop"}]}']))
+    expect(await collect()).toEqual(['A', 'B'])
+  })
+
   test('falls back to reasoning text when no content arrives', async () => {
     fakeProvider(() => sse(['data: {"choices":[{"delta":{"reasoning_content":"thought"}}]}\n\n', 'data: [DONE]\n\n']))
     const out: string[] = []
