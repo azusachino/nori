@@ -64,6 +64,8 @@ export type HealthStatus = {
   ok: boolean
   apiVersion: number
   llmConfigured: boolean
+  /** Optional endpoints this sidecar has (`progress`, `assessment-sample`); absent on older sidecars. */
+  features?: string[]
 }
 
 export type CreateAttemptInput = {
@@ -148,6 +150,37 @@ export type CreateAssessmentInput = {
   mode: 'timed' | 'untimed'
   durationSeconds?: number
   items: { lessonKey?: string; exerciseKey: string; exerciseSnapshot: ExerciseSnapshot }[]
+}
+
+/** Draw `count` items from the pool: uniformly (`random`) or favouring incorrect, due and unpractised exercises (`weak`). */
+export type AssessmentSampleInput = { count: number; strategy?: 'random' | 'weak'; seed?: number }
+
+/** How a sampled assessment was drawn; the same seed, pool order and practice history draw the same items. */
+export type AssessmentSampleInfo = { strategy: 'random' | 'weak'; seed: number; count: number; poolSize: number }
+
+export type LessonProgress = {
+  lessonKey: string
+  exercisesAttempted: number
+  exercisesCorrect: number
+  exercisesIncorrect: number
+  exercisesDue: number
+  attempts: number
+  lastActivityAt: number
+}
+
+export type CourseProgressResponse = {
+  courseKey: string
+  serverNow: number
+  totals: Omit<LessonProgress, 'lessonKey'>
+  lessons: LessonProgress[]
+}
+
+/** The sidecar answered, but it is too old for the endpoint asked for. */
+export class NoriUnsupportedError extends Error {
+  constructor(feature: string) {
+    super(`This Nori sidecar is too old for ${feature}; update the sidecar.`)
+    this.name = 'NoriUnsupportedError'
+  }
 }
 
 export type TutorContextMeta = {
@@ -582,6 +615,35 @@ export class NoriClient {
     return data.assessment
   }
 
+  /**
+   * Creates an assessment from `count` items drawn out of `input.items` (up to
+   * 500), reproducibly by `seed`. Needs the sidecar's `assessment-sample`
+   * feature: an older sidecar would ignore `sample`, so it is not called.
+   */
+  async createSampledAssessment(
+    input: CreateAssessmentInput & { sample: AssessmentSampleInput },
+    signal?: AbortSignal,
+  ): Promise<{ assessment: AssessmentDetail; sample: AssessmentSampleInfo }> {
+    await this.requireFeature('assessment-sample', 'assessment sampling', signal)
+    return this.request('/assessments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+      signal,
+    })
+  }
+
+  /** Per-lesson progress of a course: exercises attempted, correct, due, and the last activity. */
+  async getProgress(courseKey: string, signal?: AbortSignal): Promise<CourseProgressResponse> {
+    await this.requireFeature('progress', 'the progress view', signal)
+    return this.request(`/progress?${new URLSearchParams({ courseKey }).toString()}`, { method: 'GET', signal })
+  }
+
+  private async requireFeature(feature: string, label: string, signal?: AbortSignal): Promise<void> {
+    const health = await this.health(signal)
+    if (!health.features?.includes(feature)) throw new NoriUnsupportedError(label)
+  }
+
   async getAssessment(assessmentId: string, signal?: AbortSignal): Promise<AssessmentDetail> {
     const data = await this.request<{ assessment: AssessmentDetail }>(`/assessments/${encodeURIComponent(assessmentId)}`, {
       method: 'GET',
@@ -1007,7 +1069,8 @@ export function resolveNoriIslandProps(
     typeof props.lessonKey !== 'string' &&
     inferredLesson &&
     componentName !== 'NoriAssessment' &&
-    componentName !== 'NoriReviewQueue'
+    componentName !== 'NoriReviewQueue' &&
+    componentName !== 'NoriProgress'
   ) {
     props.lessonKey = inferredLesson
   }

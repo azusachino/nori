@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import {
   getSharedNoriClient,
+  NoriApiError,
+  toAttemptSummary,
+  type PracticeAttempt,
+  type PracticeUpdatedDetail,
   type ReviewQueueSummaryItem,
   type ReviewQueueSummaryResponse,
 } from '../index'
@@ -18,7 +22,8 @@ import {
   IconXCircle,
 } from './icons'
 import { useNoriConnection } from './connection'
-import { renderInlineMarkdown, renderRichText } from './markdown'
+import { ExerciseAnswerField } from './ExerciseAnswerField'
+import { renderRichText } from './markdown'
 
 export type NoriReviewQueueProps = {
   courseKey?: string
@@ -26,7 +31,13 @@ export type NoriReviewQueueProps = {
   title?: string
 }
 
-const OPTION_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+const itemKey = (item: { courseKey: string; lessonKey: string; exerciseKey: string }) =>
+  `${item.courseKey}::${item.lessonKey}::${item.exerciseKey}`
+
+function isAnswerReady(type: string, options: string[], answer: string): boolean {
+  if (type === 'multiple_choice') return options.includes(answer)
+  return answer.trim() !== ''
+}
 
 export function NoriReviewQueue({
   courseKey,
@@ -37,7 +48,11 @@ export function NoriReviewQueue({
   const [queue, setQueue] = useState<ReviewQueueSummaryResponse | null>(null)
   const [filter, setFilter] = useState<'due' | 'all'>('due')
   const [retryInputs, setRetryInputs] = useState<Record<string, string>>({})
+  // Items answered here stay on screen with their result until dismissed, even once no longer due.
+  const [answered, setAnswered] = useState<Record<string, PracticeAttempt>>({})
+  const [itemErrors, setItemErrors] = useState<Record<string, string>>({})
   const [busyKey, setBusyKey] = useState<string | null>(null)
+  const idPrefix = useId()
   const [copiedDigest, setCopiedDigest] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -87,15 +102,16 @@ export function NoriReviewQueue({
   }
 
   const handleRetrySubmit = async (item: ReviewQueueSummaryItem) => {
-    const key = `${item.courseKey}::${item.lessonKey}::${item.exerciseKey}`
+    const key = itemKey(item)
     const answer = retryInputs[key] ?? ''
-    if (!answer.trim()) return
+    if (!isAnswerReady(item.latestAttempt.exerciseType, item.latestAttempt.options, answer)) return
     setBusyKey(key)
-    setError(null)
+    setItemErrors((prev) => ({ ...prev, [key]: '' }))
     try {
-      // The queue omits the reference answer; the retry needs the full snapshot to be graded.
+      // The queue omits the reference answer; the attempt needs the full snapshot to be graded.
       const latest = await client.getAttempt(item.latestAttempt.id)
-      await client.createAttempt({
+      const created = await client.createAttempt({
+        id: crypto.randomUUID(),
         courseKey: item.courseKey,
         lessonKey: item.lessonKey,
         exerciseKey: item.exerciseKey,
@@ -103,19 +119,32 @@ export function NoriReviewQueue({
         exerciseSnapshot: latest.exerciseSnapshot,
         answer,
       })
+      setAnswered((prev) => ({ ...prev, [key]: created }))
       setRetryInputs((prev) => ({ ...prev, [key]: '' }))
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        const detail: PracticeUpdatedDetail = { courseKey: item.courseKey, lessonKey: item.lessonKey, attempts: [toAttemptSummary(created)] }
+        window.dispatchEvent(new CustomEvent('nori:practice-updated', { detail }))
+      }
       await refreshQueue()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Retry submission failed.')
+      const message = e instanceof NoriApiError ? e.message : 'Could not save the answer. Check the connection and try again.'
+      setItemErrors((prev) => ({ ...prev, [key]: message }))
     } finally {
       setBusyKey(null)
     }
   }
 
+  const dismissAnswered = (key: string) =>
+    setAnswered((prev) => {
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+
   const items = useMemo(() => {
     if (!queue) return []
-    return filter === 'due' ? queue.items.filter((i) => i.isDue) : queue.items
-  }, [queue, filter])
+    return filter === 'due' ? queue.items.filter((i) => i.isDue || answered[itemKey(i)]) : queue.items
+  }, [queue, filter, answered])
 
   return (
     <section className="nori-practice" aria-label={title}>
@@ -188,10 +217,12 @@ export function NoriReviewQueue({
               </p>
             </div>
           ) : (
-            items.map((item) => {
-              const key = `${item.courseKey}::${item.lessonKey}::${item.exerciseKey}`
+            items.map((item, itemIdx) => {
+              const key = itemKey(item)
               const snap = { ...item.latestAttempt, type: item.latestAttempt.exerciseType }
               const value = retryInputs[key] ?? ''
+              const result = answered[key]
+              const promptId = `${idPrefix}-prompt-${itemIdx}`
               const lessonHref = item.lessonKey
                 ? `/courses/${item.courseKey}/lessons/${item.lessonKey}`
                 : `/courses/${item.courseKey}`
@@ -231,56 +262,80 @@ export function NoriReviewQueue({
                     <span className="nori-muted">{item.attemptCount} attempt(s)</span>
                   </div>
 
-                  <div className="nori-card__prompt">{renderRichText(snap.prompt)}</div>
-
-                  {snap.type === 'multiple_choice' ? (
-                    <div className="nori-options">
-                      {snap.options.map((opt, idx) => {
-                        const isSelected = value === opt
-                        return (
-                          <label
-                            key={opt}
-                            className={`nori-option nori-option--has-key${isSelected ? ' nori-option--selected' : ''}`}
-                          >
-                            <input
-                              type="radio"
-                              data-ui="nori"
-                              name={`review-${key}`}
-                              checked={isSelected}
-                              onChange={() => setRetryInputs((prev) => ({ ...prev, [key]: opt }))}
-                            />
-                            <span className="nori-option__key">{OPTION_KEYS[idx] ?? idx + 1}</span>
-                            <span className="nori-option__body">{renderInlineMarkdown(opt)}</span>
-                          </label>
-                        )
-                      })}
-                    </div>
-                  ) : (
-                    <input
-                      type="text"
-                      data-ui="nori"
-                      className="nori-input-inline"
-                      placeholder="Write a quick recall retry…"
-                      value={value}
-                      onChange={(e) => setRetryInputs((prev) => ({ ...prev, [key]: e.target.value }))}
-                    />
-                  )}
-
-                  <div className="nori-actions">
-                    <button
-                      type="button"
-                      data-ui="nori"
-                      className="nori-btn nori-btn--primary nori-btn--sm"
-                      disabled={busyKey === key || !value.trim()}
-                      onClick={() => handleRetrySubmit(item)}
-                    >
-                      <IconSend />
-                      <span>{busyKey === key ? 'Saving retry…' : 'Submit recall retry'}</span>
-                    </button>
-                    {item.latestAttempt.ownerNote && (
-                      <span className="nori-muted">Takeaway: {item.latestAttempt.ownerNote}</span>
-                    )}
+                  <div id={promptId} className="nori-card__prompt">
+                    {renderRichText(result ? result.exerciseSnapshot.prompt : snap.prompt)}
                   </div>
+
+                  {result ? (
+                    <>
+                      <ExerciseAnswerField
+                        type={result.exerciseSnapshot.type}
+                        options={result.exerciseSnapshot.options}
+                        name={`review-${key}`}
+                        promptId={promptId}
+                        value={result.answer}
+                        onChange={() => undefined}
+                        reveal={{ expected: result.exerciseSnapshot.answer, submitted: result.answer }}
+                        disabled
+                      />
+                      <div className="nori-feedback" data-review-result={result.correct === 1 ? 'correct' : result.correct === 0 ? 'incorrect' : 'recorded'}>
+                        <div className="nori-card__top">
+                          <span
+                            className={`nori-badge ${result.correct === 1 ? 'nori-badge--correct' : result.correct === 0 ? 'nori-badge--incorrect' : ''}`}
+                          >
+                            {result.correct === 1 ? <IconCheckCircle /> : result.correct === 0 ? <IconXCircle /> : <IconCheck />}
+                            <span>{result.correct === 1 ? 'Correct' : result.correct === 0 ? 'Incorrect' : 'Answer recorded'}</span>
+                          </span>
+                          <span className="nori-muted">
+                            {item.isDue ? 'Still due: try again later' : `Next review in ${item.intervalDays} day(s)`}
+                          </span>
+                        </div>
+                        {result.exerciseSnapshot.type !== 'multiple_choice' && result.exerciseSnapshot.type !== 'multiple_select' && (
+                          <div>
+                            <strong>Reference answer</strong>
+                            <div className="nori-attempt__answer">{renderRichText(result.exerciseSnapshot.answer)}</div>
+                          </div>
+                        )}
+                        {result.exerciseSnapshot.explanation && (
+                          <div className="nori-muted">{renderRichText(result.exerciseSnapshot.explanation)}</div>
+                        )}
+                      </div>
+                      <div className="nori-actions">
+                        <button type="button" data-ui="nori" className="nori-btn nori-btn--sm" onClick={() => dismissAnswered(key)}>
+                          <IconCheck />
+                          <span>Done</span>
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <ExerciseAnswerField
+                        type={snap.type}
+                        options={snap.options}
+                        name={`review-${key}`}
+                        promptId={promptId}
+                        value={value}
+                        onChange={(next) => setRetryInputs((prev) => ({ ...prev, [key]: next }))}
+                        disabled={busyKey === key}
+                      />
+                      {itemErrors[key] && <p className="nori-error">{itemErrors[key]}</p>}
+                      <div className="nori-actions">
+                        <button
+                          type="button"
+                          data-ui="nori"
+                          className="nori-btn nori-btn--primary nori-btn--sm"
+                          disabled={busyKey === key || !isAnswerReady(snap.type, snap.options, value)}
+                          onClick={() => handleRetrySubmit(item)}
+                        >
+                          <IconSend />
+                          <span>{busyKey === key ? 'Saving…' : 'Submit answer'}</span>
+                        </button>
+                        {item.latestAttempt.ownerNote && (
+                          <span className="nori-muted">Takeaway: {item.latestAttempt.ownerNote}</span>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </article>
               )
             })

@@ -9,6 +9,8 @@ import { practiceAttempts, sidecarSchema } from './schema'
 import { handleSidecarActivities } from './sidecar-activities'
 
 export const SIDECAR_API_VERSION = 1
+/** Optional endpoints added within v1; a client checks for one before using it. */
+export const SIDECAR_FEATURES = ['progress', 'assessment-sample']
 
 export type SidecarExerciseType = 'multiple_choice' | 'multiple_select' | 'cloze' | 'written' | 'code'
 
@@ -322,7 +324,7 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
     if (subPath === '/v1/health' && request.method === 'GET') {
       const llmConfigured = Boolean(setting('LLM_BASE_URL') && setting('LLM_MODEL'))
       return Response.json(
-        { ok: true, apiVersion: SIDECAR_API_VERSION, llmConfigured },
+        { ok: true, apiVersion: SIDECAR_API_VERSION, llmConfigured, features: SIDECAR_FEATURES },
         { headers: { 'Cache-Control': 'no-store' } },
       )
     }

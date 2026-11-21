@@ -89,8 +89,8 @@ type ReviewRow = typeof practiceAttempts.$inferSelect & {
  * open-ended), the due time and the reason rank. Only the selected rows reach
  * JavaScript, already ordered by reason and due time.
  */
-function reviewRows(orm: SidecarOrm, courseKey: string | null, now: number, onlyDue: boolean): ReviewRow[] {
-  const query = sql`
+function scoredExercises(courseKey: string | null, now: number) {
+  return sql`
     WITH ranked AS (
       -- Everything is ranked and scored on narrow columns; the wide text columns
       -- (snapshot, answer, feedback) are read only for the rows returned.
@@ -104,10 +104,11 @@ function reviewRows(orm: SidecarOrm, courseKey: string | null, now: number, only
     ),
     groups AS (
       -- One pass over the ranked rows: the latest attempt's fields (rn = 1) and the streak.
-      SELECT
+      SELECT course_key, lesson_key, exercise_key,
         MAX(CASE WHEN rn = 1 THEN rid END) AS latest_rid,
         MAX(CASE WHEN rn = 1 THEN created_at END) AS latest_at,
         MAX(CASE WHEN rn = 1 THEN grading = 'deterministic' AND correct = 0 END) AS is_incorrect,
+        MAX(CASE WHEN rn = 1 THEN grading = 'deterministic' AND correct = 1 END) AS is_correct,
         MAX(CASE WHEN rn = 1 THEN has_note END) AS has_note,
         MAX(rn) AS attempt_count,
         MIN(created_at) AS first_at,
@@ -137,7 +138,12 @@ function reviewRows(orm: SidecarOrm, courseKey: string | null, now: number, only
         latest_at + interval_days * ${DAY_MS} AS due_at,
         CASE WHEN interval_days = 0 OR ${now} >= latest_at + interval_days * ${DAY_MS} THEN 1 ELSE 0 END AS is_due
       FROM latest
-    ),
+    )`
+}
+
+function reviewRows(orm: SidecarOrm, courseKey: string | null, now: number, onlyDue: boolean): ReviewRow[] {
+  const query = sql`
+    ${scoredExercises(courseKey, now)},
     counted AS (
       SELECT scored.*,
         CASE WHEN is_incorrect THEN 0 WHEN has_note AND is_due = 1 THEN 1 WHEN is_due = 1 THEN 2 ELSE 3 END AS reason_rank,
@@ -276,6 +282,83 @@ export function buildReviewQueueSummary(
       }
     }),
   }
+}
+
+export type LessonProgress = {
+  lessonKey: string
+  /** Exercises with at least one attempt. */
+  exercisesAttempted: number
+  /** Exercises whose latest attempt was graded correct. */
+  exercisesCorrect: number
+  /** Exercises whose latest attempt was graded incorrect. */
+  exercisesIncorrect: number
+  /** Exercises due for recall now (incorrect ones included), as in the review queue. */
+  exercisesDue: number
+  attempts: number
+  lastActivityAt: number
+}
+
+export type CourseProgressResponse = {
+  courseKey: string
+  serverNow: number
+  totals: Omit<LessonProgress, 'lessonKey'>
+  lessons: LessonProgress[]
+}
+
+/**
+ * Per-lesson progress for a course, aggregated in SQLite over the same
+ * per-exercise scoring as the review queue (so "due" agrees with it). Lessons
+ * with no attempts are not listed; the island fills them in from its banks.
+ */
+export function buildCourseProgress(orm: SidecarOrm, courseKey: string, now: number): CourseProgressResponse {
+  const rows = orm.all<Record<string, number | string>>(sql`
+    ${scoredExercises(courseKey, now)}
+    SELECT lesson_key,
+      COUNT(*) AS exercises_attempted,
+      COALESCE(SUM(is_correct), 0) AS exercises_correct,
+      COALESCE(SUM(is_incorrect), 0) AS exercises_incorrect,
+      SUM(is_due) AS exercises_due,
+      SUM(attempt_count) AS attempts,
+      MAX(latest_at) AS last_activity_at
+    FROM scored
+    GROUP BY lesson_key
+    ORDER BY lesson_key
+  `)
+  const lessons: LessonProgress[] = rows.map((r) => ({
+    lessonKey: r.lesson_key as string,
+    exercisesAttempted: Number(r.exercises_attempted),
+    exercisesCorrect: Number(r.exercises_correct),
+    exercisesIncorrect: Number(r.exercises_incorrect),
+    exercisesDue: Number(r.exercises_due),
+    attempts: Number(r.attempts),
+    lastActivityAt: Number(r.last_activity_at),
+  }))
+  const totals = {
+    exercisesAttempted: 0,
+    exercisesCorrect: 0,
+    exercisesIncorrect: 0,
+    exercisesDue: 0,
+    attempts: 0,
+    lastActivityAt: 0,
+  }
+  for (const l of lessons) {
+    totals.exercisesAttempted += l.exercisesAttempted
+    totals.exercisesCorrect += l.exercisesCorrect
+    totals.exercisesIncorrect += l.exercisesIncorrect
+    totals.exercisesDue += l.exercisesDue
+    totals.attempts += l.attempts
+    totals.lastActivityAt = Math.max(totals.lastActivityAt, l.lastActivityAt)
+  }
+  return { courseKey, serverNow: now, totals, lessons }
+}
+
+/** Recall state of each tracked exercise of a course, keyed by `lessonKey` + NUL + `exerciseKey`. */
+export function exerciseRecallStates(orm: SidecarOrm, courseKey: string, now: number): Map<string, { isDue: boolean; isIncorrect: boolean }> {
+  const rows = orm.all<{ lesson_key: string; exercise_key: string; is_due: number; is_incorrect: number }>(sql`
+    ${scoredExercises(courseKey, now)}
+    SELECT lesson_key, exercise_key, is_due, is_incorrect FROM scored
+  `)
+  return new Map(rows.map((r) => [`${r.lesson_key}\u0000${r.exercise_key}`, { isDue: r.is_due === 1, isIncorrect: r.is_incorrect === 1 }]))
 }
 
 export function buildRecallDigest(
