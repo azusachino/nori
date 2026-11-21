@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - **Streaming tutor (`POST /v1/tutor/stream`).** The tutor reply streams to `<NoriTutor />` over Server-Sent Events and shows as it arrives; the learner's question shows at once. A Cancel button aborts the request and the model call on the sidecar, saves nothing, and puts the question back in the box. `POST /v1/tutor` is unchanged and also cancels the model call when the client disconnects. `GET /v1/health` lists `features: ["tutor-stream"]`; `NoriClient.streamTutorMessage` uses the blocking call against an older sidecar. Deploy the sidecar first for streaming; older islands keep working.
 - **Tutor history cap.** The model gets the last 12 turns, at most 24,000 characters (`historyLimit` in `GET /v1/tutor`), plus the lesson and selected attempts, never starting with an orphan reply. The island says when older turns were left out, on each reply and above the composer.
