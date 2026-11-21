@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   getSharedNoriClient,
   NoriApiError,
@@ -51,7 +51,18 @@ export function NoriReviewQueue({
   // Items answered here stay on screen with their result until dismissed, even once no longer due.
   const [answered, setAnswered] = useState<Record<string, PracticeAttempt>>({})
   const [itemErrors, setItemErrors] = useState<Record<string, string>>({})
-  const [busyKey, setBusyKey] = useState<string | null>(null)
+  // Keys with a request in flight: 'digest', or one per queue item, so items save independently.
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set())
+  const markBusy = (key: string, on: boolean) =>
+    setBusy((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(key)
+      else next.delete(key)
+      return next
+    })
+  // One attempt id per item and answer, kept until the save succeeds: a retry after a lost
+  // response re-sends the same id, and the sidecar records it once.
+  const pendingAttempts = useRef(new Map<string, { answer: string; id: string }>())
   const idPrefix = useId()
   const [copiedDigest, setCopiedDigest] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -87,7 +98,7 @@ export function NoriReviewQueue({
   }, [refreshQueue])
 
   const handleCopyDigest = async () => {
-    setBusyKey('digest')
+    markBusy('digest', true)
     setError(null)
     try {
       const digest = await client.getRecallDigest({ courseKey })
@@ -97,21 +108,26 @@ export function NoriReviewQueue({
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not export recall digest.')
     } finally {
-      setBusyKey(null)
+      markBusy('digest', false)
     }
   }
 
   const handleRetrySubmit = async (item: ReviewQueueSummaryItem) => {
     const key = itemKey(item)
     const answer = retryInputs[key] ?? ''
-    if (!isAnswerReady(item.latestAttempt.exerciseType, item.latestAttempt.options, answer)) return
-    setBusyKey(key)
+    if (busy.has(key) || !isAnswerReady(item.latestAttempt.exerciseType, item.latestAttempt.options, answer)) return
+    let pending = pendingAttempts.current.get(key)
+    if (!pending || pending.answer !== answer) {
+      pending = { answer, id: crypto.randomUUID() }
+      pendingAttempts.current.set(key, pending)
+    }
+    markBusy(key, true)
     setItemErrors((prev) => ({ ...prev, [key]: '' }))
     try {
       // The queue omits the reference answer; the attempt needs the full snapshot to be graded.
       const latest = await client.getAttempt(item.latestAttempt.id)
       const created = await client.createAttempt({
-        id: crypto.randomUUID(),
+        id: pending.id,
         courseKey: item.courseKey,
         lessonKey: item.lessonKey,
         exerciseKey: item.exerciseKey,
@@ -119,6 +135,7 @@ export function NoriReviewQueue({
         exerciseSnapshot: latest.exerciseSnapshot,
         answer,
       })
+      pendingAttempts.current.delete(key)
       setAnswered((prev) => ({ ...prev, [key]: created }))
       setRetryInputs((prev) => ({ ...prev, [key]: '' }))
       if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
@@ -130,7 +147,7 @@ export function NoriReviewQueue({
       const message = e instanceof NoriApiError ? e.message : 'Could not save the answer. Check the connection and try again.'
       setItemErrors((prev) => ({ ...prev, [key]: message }))
     } finally {
-      setBusyKey(null)
+      markBusy(key, false)
     }
   }
 
@@ -173,7 +190,7 @@ export function NoriReviewQueue({
               type="button"
               data-ui="nori"
               className="nori-btn nori-btn--sm"
-              disabled={busyKey === 'digest'}
+              disabled={busy.has('digest')}
               onClick={handleCopyDigest}
             >
               {copiedDigest ? <IconCheck /> : <IconCopy />}
@@ -316,7 +333,7 @@ export function NoriReviewQueue({
                         promptId={promptId}
                         value={value}
                         onChange={(next) => setRetryInputs((prev) => ({ ...prev, [key]: next }))}
-                        disabled={busyKey === key}
+                        disabled={busy.has(key)}
                       />
                       {itemErrors[key] && <p className="nori-error">{itemErrors[key]}</p>}
                       <div className="nori-actions">
@@ -324,11 +341,11 @@ export function NoriReviewQueue({
                           type="button"
                           data-ui="nori"
                           className="nori-btn nori-btn--primary nori-btn--sm"
-                          disabled={busyKey === key || !isAnswerReady(snap.type, snap.options, value)}
+                          disabled={busy.has(key) || !isAnswerReady(snap.type, snap.options, value)}
                           onClick={() => handleRetrySubmit(item)}
                         >
                           <IconSend />
-                          <span>{busyKey === key ? 'Saving…' : 'Submit answer'}</span>
+                          <span>{busy.has(key) ? 'Saving…' : 'Submit answer'}</span>
                         </button>
                         {item.latestAttempt.ownerNote && (
                           <span className="nori-muted">Takeaway: {item.latestAttempt.ownerNote}</span>
