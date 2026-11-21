@@ -45,7 +45,7 @@ describe('sidecar v1 API (Slice 1)', () => {
       const defaultApi = createSidecarApi(db)
       const res1 = await defaultApi(new Request('http://127.0.0.1:3001/api/nori/v1/health'))
       expect(res1.status).toBe(200)
-      expect(await res1.json()).toEqual({ ok: true, apiVersion: 1, llmConfigured: false, features: ['progress', 'assessment-sample'] })
+      expect(await res1.json()).toEqual({ ok: true, apiVersion: 1, llmConfigured: false, features: ['tutor-stream', 'progress', 'assessment-sample'] })
       expect((await defaultApi(new Request('http://127.0.0.1:3001/v1/health'))).status).toBe(404)
 
       process.env.NORI_LLM_BASE_URL = 'http://127.0.0.1:11434/v1'
@@ -53,7 +53,7 @@ describe('sidecar v1 API (Slice 1)', () => {
       const strippedApi = createSidecarApi(db, { basePath: '' })
       const res2 = await strippedApi(new Request('http://127.0.0.1:3001/v1/health'))
       expect(res2.status).toBe(200)
-      expect(await res2.json()).toEqual({ ok: true, apiVersion: 1, llmConfigured: true, features: ['progress', 'assessment-sample'] })
+      expect(await res2.json()).toEqual({ ok: true, apiVersion: 1, llmConfigured: true, features: ['tutor-stream', 'progress', 'assessment-sample'] })
     } finally {
       if (prevBase === undefined) delete process.env.NORI_LLM_BASE_URL
       else process.env.NORI_LLM_BASE_URL = prevBase

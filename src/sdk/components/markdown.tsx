@@ -65,7 +65,13 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
   return nodes
 }
 
-function renderMarkdownBlocks(segment: string, baseKey: string): ReactNode[] {
+type HeadingIds = { prefix: string; next: number }
+
+const HEADING_RE = /^\s*(#{1,4})\s+(.+)$/
+const FENCE_OPEN_RE = /^[ \t]*```([^`]*)$/
+const FENCE_CLOSE_RE = /^[ \t]*```[ \t]*$/
+
+function renderMarkdownBlocks(segment: string, baseKey: string, headingIds?: HeadingIds): ReactNode[] {
   const trimmed = segment.replace(/^\n+|\n+$/g, '')
   if (!trimmed) return []
 
@@ -81,10 +87,14 @@ function renderMarkdownBlocks(segment: string, baseKey: string): ReactNode[] {
     }
 
     // Heading: # .. ####
-    const headingMatch = line.match(/^\s*(#{1,4})\s+(.+)$/)
+    const headingMatch = line.match(HEADING_RE)
     if (headingMatch) {
       blocks.push(
-        <div key={`${baseKey}-h-${i}`} className="nori-md-heading">
+        <div
+          key={`${baseKey}-h-${i}`}
+          className="nori-md-heading"
+          id={headingIds ? `${headingIds.prefix}-${headingIds.next++}` : undefined}
+        >
           {renderInlineMarkdown(headingMatch[2]!.trim())}
         </div>,
       )
@@ -145,10 +155,12 @@ function renderMarkdownBlocks(segment: string, baseKey: string): ReactNode[] {
     // Paragraph lines up to blank line or next special block
     const paraLines: string[] = []
     const start = i
+    // The first line is always taken, so a line such as "# " (a heading still
+    // streaming in) cannot stall the loop.
     while (
       i < lines.length &&
       lines[i]!.trim() !== '' &&
-      !/^\s*(?:#{1,4}\s+|[-*]\s+|\d+\.\s+|>\s?)/.test(lines[i]!)
+      (i === start || !/^\s*(?:#{1,4}\s+|[-*]\s+|\d+\.\s+|>\s?)/.test(lines[i]!))
     ) {
       paraLines.push(lines[i]!)
       i++
@@ -163,8 +175,36 @@ function renderMarkdownBlocks(segment: string, baseKey: string): ReactNode[] {
   return blocks
 }
 
-export function renderRichText(text: string): ReactNode {
+export type MarkdownHeading = { id: string; level: number; text: string }
+
+/**
+ * The headings renderRichText draws for `text`, with the ids it gives them when
+ * called with the same `headingIdPrefix`; use it to build a jump list.
+ */
+export function extractHeadings(text: string, headingIdPrefix: string): MarkdownHeading[] {
+  const normalized = text.replace(/\r\n/g, '\n')
+  if (!normalized.includes('\n')) return []
+  const headings: MarkdownHeading[] = []
+  let inFence = false
+  for (const line of normalized.split('\n')) {
+    if (inFence) {
+      if (FENCE_CLOSE_RE.test(line)) inFence = false
+      continue
+    }
+    if (FENCE_OPEN_RE.test(line)) {
+      inFence = true
+      continue
+    }
+    const match = line.match(HEADING_RE)
+    if (match) headings.push({ id: `${headingIdPrefix}-${headings.length}`, level: match[1]!.length, text: match[2]!.trim() })
+  }
+  return headings
+}
+
+/** Renders Markdown; with `headingIdPrefix`, headings get ids `<prefix>-0`, `<prefix>-1`, … for jump links. */
+export function renderRichText(text: string, options: { headingIdPrefix?: string } = {}): ReactNode {
   if (!text) return null
+  const headingIds = options.headingIdPrefix ? { prefix: options.headingIdPrefix, next: 0 } : undefined
   const normalized = text.replace(/\r\n/g, '\n')
 
   // Fast path for single-line text without newlines
@@ -182,7 +222,7 @@ export function renderRichText(text: string): ReactNode {
 
   const flushProse = () => {
     if (proseLines.length > 0) {
-      out.push(...renderMarkdownBlocks(proseLines.join('\n'), `seg-${segIdx++}`))
+      out.push(...renderMarkdownBlocks(proseLines.join('\n'), `seg-${segIdx++}`, headingIds))
       proseLines = []
     }
   }
@@ -202,7 +242,7 @@ export function renderRichText(text: string): ReactNode {
   for (const line of lines) {
     if (!inFence) {
       // A multi-line code fence opening line starts with optional spaces + ``` + optional language (no closing ``` on the same line)
-      const openMatch = line.match(/^[ \t]*```([^`]*)$/)
+      const openMatch = line.match(FENCE_OPEN_RE)
       if (openMatch) {
         flushProse()
         inFence = true
@@ -212,7 +252,7 @@ export function renderRichText(text: string): ReactNode {
       }
       proseLines.push(line)
     } else {
-      if (/^[ \t]*```[ \t]*$/.test(line)) {
+      if (FENCE_CLOSE_RE.test(line)) {
         flushFence()
       } else {
         fenceLines.push(line)

@@ -64,7 +64,7 @@ export type HealthStatus = {
   ok: boolean
   apiVersion: number
   llmConfigured: boolean
-  /** Optional endpoints this sidecar has (`progress`, `assessment-sample`); absent on older sidecars. */
+  /** Optional endpoints this sidecar has (`tutor-stream`, `progress`, `assessment-sample`); absent on older sidecars. */
   features?: string[]
 }
 
@@ -206,8 +206,25 @@ export type TutorSession = {
   courseKey: string
   lessonKey: string
   contextLimit: number
+  /** How much earlier conversation is sent to the model; absent on older sidecars. */
+  historyLimit?: { maxTurns: number; maxChars: number }
   revision: number
   turns: TutorTurn[]
+}
+
+export type TutorSendResult = {
+  courseKey: string
+  lessonKey: string
+  revision: number
+  context: TutorContextMeta
+  turns: TutorTurn[]
+}
+
+export type TutorStreamHandlers = {
+  /** The context the sidecar sent to the model, before the first token. */
+  onStart?: (context: TutorContextMeta) => void
+  /** Each piece of the reply as it arrives. */
+  onDelta?: (text: string) => void
 }
 
 export type SendTutorInput = {
@@ -489,25 +506,28 @@ export class NoriClient {
       this.setState('offline')
       throw new NoriNetworkError(`The Nori sidecar returned an invalid response (${response.status}).`)
     }
+    if (!response.ok) this.throwFailure(response, parsed)
+    this.setState('online')
+    return (parsed ?? {}) as T
+  }
+
+  /** Throws the error a non-2xx response stands for. */
+  private throwFailure(response: Response, parsed: Record<string, unknown> | null): never {
     const data = parsed ?? {}
-    if (!response.ok) {
-      // The sidecar always answers errors with { error }. A 404+ without it came from
-      // something in front of the sidecar (a proxy, a static host), so it is unreachable.
-      if (response.status >= 404 && typeof data.error !== 'string') {
-        this.setState('offline')
-        throw new NoriNetworkError(`The Nori sidecar is unreachable (${response.status}).`)
-      }
-      this.setState('online')
-      const message = typeof data.error === 'string' ? data.error : `Request failed (${response.status})`
-      throw new NoriApiError(
-        message,
-        response.status,
-        data.attempt as PracticeAttempt | undefined,
-        data.assessment as AssessmentDetail | undefined,
-      )
+    // The sidecar always answers errors with { error }. A 404+ without it came from
+    // something in front of the sidecar (a proxy, a static host), so it is unreachable.
+    if (response.status >= 404 && typeof data.error !== 'string') {
+      this.setState('offline')
+      throw new NoriNetworkError(`The Nori sidecar is unreachable (${response.status}).`)
     }
     this.setState('online')
-    return data as T
+    const message = typeof data.error === 'string' ? data.error : `Request failed (${response.status})`
+    throw new NoriApiError(
+      message,
+      response.status,
+      data.attempt as PracticeAttempt | undefined,
+      data.assessment as AssessmentDetail | undefined,
+    )
   }
 
   async health(signal?: AbortSignal): Promise<HealthStatus> {
@@ -725,10 +745,7 @@ export class NoriClient {
     return this.request(`/tutor?${query.toString()}`, { method: 'GET', signal })
   }
 
-  async sendTutorMessage(
-    input: SendTutorInput,
-    signal?: AbortSignal,
-  ): Promise<{ courseKey: string; lessonKey: string; revision: number; context: TutorContextMeta; turns: TutorTurn[] }> {
+  async sendTutorMessage(input: SendTutorInput, signal?: AbortSignal): Promise<TutorSendResult> {
     return this.request('/tutor', {
       method: 'POST',
       timeoutMs: this.llmTimeoutMs,
@@ -736,6 +753,109 @@ export class NoriClient {
       body: JSON.stringify(input),
       signal,
     })
+  }
+
+  /**
+   * Sends a tutor message and streams the reply (`POST /tutor/stream`, SSE),
+   * calling `onDelta` as text arrives; resolves with the saved conversation.
+   * Aborting `signal` cancels the model request on the sidecar too, and nothing
+   * is saved. A sidecar without the `tutor-stream` feature gets the blocking
+   * `sendTutorMessage` call instead. The stream ends with a network error if no
+   * bytes arrive for the LLM timeout (the sidecar sends a heartbeat every 15 s).
+   */
+  async streamTutorMessage(input: SendTutorInput, handlers: TutorStreamHandlers = {}, signal?: AbortSignal): Promise<TutorSendResult> {
+    const health = await this.health(signal)
+    if (!health.features?.includes('tutor-stream')) return this.sendTutorMessage(input, signal)
+
+    const idle = new AbortController()
+    let idleTimer: ReturnType<typeof setTimeout> | undefined
+    const touch = () => {
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => idle.abort(), this.llmTimeoutMs)
+    }
+    const fetchSignal = signal ? AbortSignal.any([signal, idle.signal]) : idle.signal
+    const unreachable = (err: unknown): never => {
+      if (signal?.aborted) throw err
+      this.setState('offline')
+      throw new NoriNetworkError(
+        idle.signal.aborted
+          ? `The Nori sidecar did not respond within ${Math.round(this.llmTimeoutMs / 1000)} s.`
+          : 'The Nori sidecar is unreachable.',
+        { cause: err },
+      )
+    }
+    touch()
+    try {
+      let response: Response
+      try {
+        response = await this.fetchFn(`${this.baseUrl}/tutor/stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+          body: JSON.stringify(input),
+          signal: fetchSignal,
+        })
+      } catch (err) {
+        return unreachable(err)
+      }
+      if (!response.ok || !response.headers.get('content-type')?.startsWith('text/event-stream') || !response.body) {
+        let text = ''
+        try {
+          text = await response.text()
+        } catch (err) {
+          return unreachable(err)
+        }
+        const parsed = parseJsonObject(text)
+        if (response.ok) {
+          this.setState('offline')
+          throw new NoriNetworkError(`The Nori sidecar returned an invalid response (${response.status}).`)
+        }
+        this.throwFailure(response, parsed)
+      }
+      this.setState('online')
+      const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader()
+      let buffer = ''
+      while (true) {
+        let chunk: Awaited<ReturnType<typeof reader.read>>
+        try {
+          chunk = await reader.read()
+        } catch (err) {
+          return unreachable(err)
+        }
+        if (chunk.done) break
+        touch()
+        // Normalize after joining, so a CRLF split across two chunks still becomes one LF.
+        buffer = (buffer + chunk.value).replace(/\r\n/g, '\n')
+        let end: number
+        while ((end = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, end)
+          buffer = buffer.slice(end + 2)
+          let event = 'message'
+          const dataLines: string[] = []
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event:')) event = line.slice(6).trim()
+            else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''))
+          }
+          if (!dataLines.length) continue
+          const data = parseJsonObject(dataLines.join('\n')) ?? {}
+          if (event === 'start') handlers.onStart?.(data.context as TutorContextMeta)
+          else if (event === 'delta' && typeof data.text === 'string') handlers.onDelta?.(data.text)
+          else if (event === 'done') {
+            await reader.cancel().catch(() => undefined)
+            if (!Array.isArray(data.turns)) throw new NoriApiError('The tutor returned an invalid reply.', 502)
+            return data as unknown as TutorSendResult
+          } else if (event === 'error') {
+            await reader.cancel().catch(() => undefined)
+            throw new NoriApiError(
+              typeof data.error === 'string' ? data.error : 'Tutor request failed.',
+              typeof data.status === 'number' ? data.status : 502,
+            )
+          }
+        }
+      }
+      return unreachable(new Error('The tutor stream ended before the reply was complete.'))
+    } finally {
+      clearTimeout(idleTimer)
+    }
   }
 
   async getReviewQueue(
