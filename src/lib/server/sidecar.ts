@@ -2,13 +2,16 @@ import type { Database } from 'bun:sqlite'
 import { and, asc, eq, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/bun-sqlite'
 import { createHash } from 'node:crypto'
-import { complete, ModelError } from './ai'
+import { complete, completeStream, ModelError } from './ai'
 import { setting } from './config'
 import { INVALID_VIEW_ERROR, parseListView, readJson } from './input'
 import { practiceAttempts, sidecarSchema } from './schema'
 import { handleSidecarActivities } from './sidecar-activities'
+import type { StreamFn } from './tutor'
 
 export const SIDECAR_API_VERSION = 1
+/** Optional endpoints added within v1; a client checks for one before using it. */
+export const SIDECAR_FEATURES = ['tutor-stream']
 
 export type SidecarExerciseType = 'multiple_choice' | 'multiple_select' | 'cloze' | 'written' | 'code'
 
@@ -116,6 +119,8 @@ export type SidecarOptions = {
   basePath?: string
   now?: () => number
   completeFn?: typeof complete
+  /** Streams tutor replies (`POST /v1/tutor/stream`); defaults to the provider's `stream: true` API. */
+  streamFn?: StreamFn
 }
 
 const COURSE_KEY_RE = /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/
@@ -313,6 +318,7 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
   const basePath = normalizeBasePath(options.basePath ?? setting('BASE_PATH') ?? '/api/nori')
   const now = options.now ?? Date.now
   const completeFn = options.completeFn ?? complete
+  const streamFn = options.streamFn ?? completeStream
 
   return async function handle(request: Request): Promise<Response> {
     const url = new URL(request.url)
@@ -322,7 +328,7 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
     if (subPath === '/v1/health' && request.method === 'GET') {
       const llmConfigured = Boolean(setting('LLM_BASE_URL') && setting('LLM_MODEL'))
       return Response.json(
-        { ok: true, apiVersion: SIDECAR_API_VERSION, llmConfigured },
+        { ok: true, apiVersion: SIDECAR_API_VERSION, llmConfigured, features: SIDECAR_FEATURES },
         { headers: { 'Cache-Control': 'no-store' } },
       )
     }
@@ -583,7 +589,7 @@ export function createSidecarApi(database: Database, options: SidecarOptions = {
       }
     }
 
-    const activityResponse = await handleSidecarActivities(orm, subPath, url, request, now, completeFn)
+    const activityResponse = await handleSidecarActivities(orm, subPath, url, request, now, completeFn, streamFn)
     if (activityResponse) return activityResponse
 
     return Response.json({ error: 'Not found' }, { status: 404 })
