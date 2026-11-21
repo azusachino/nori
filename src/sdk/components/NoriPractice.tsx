@@ -38,6 +38,7 @@ import {
   IconWifiOff,
   IconXCircle,
 } from './icons'
+import { ExerciseAnswerField } from './ExerciseAnswerField'
 import { renderInlineMarkdown, renderRichText } from './markdown'
 
 export type NoriPracticeProps = {
@@ -55,8 +56,6 @@ function notifyPracticeUpdated(courseKey: string, lessonKey: string, attempts: P
     window.dispatchEvent(new CustomEvent('nori:practice-updated', { detail }))
   }
 }
-
-const OPTION_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 export function NoriPractice({
   courseKey,
@@ -178,17 +177,6 @@ export function NoriPractice({
       cancelled = true
     }
   }, [client, connectionState, courseKey, lessonKey, exercises])
-
-  const toggleMultiOption = (exerciseKey: string, option: string) => {
-    setInputs((prev) => {
-      const current = (prev[exerciseKey] ?? '')
-        .split('\n')
-        .map((s) => s.trim())
-        .filter(Boolean)
-      const next = current.includes(option) ? current.filter((item) => item !== option) : [...current, option]
-      return { ...prev, [exerciseKey]: next.join('\n') }
-    })
-  }
 
   const handleVerifyCode = async (exercise: PracticeExercise) => {
     const code = inputs[exercise.key] ?? ''
@@ -425,34 +413,6 @@ export function NoriPractice({
         const codeVerify = codeResults[exercise.key]
         const promptId = `${idPrefix}-prompt-${exIdx}`
 
-        const expectedSet =
-          exercise.type === 'multiple_select'
-            ? new Set(
-                exercise.answer
-                  .split('\n')
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              )
-            : null
-        const latestPickedSet =
-          exercise.type === 'multiple_select'
-            ? new Set(
-                latestAnswer
-                  .split('\n')
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              )
-            : null
-        const currentPickedSet =
-          exercise.type === 'multiple_select'
-            ? new Set(
-                value
-                  .split('\n')
-                  .map((s) => s.trim())
-                  .filter(Boolean),
-              )
-            : null
-
         return (
           <article key={exercise.key} className="nori-card" data-exercise-key={exercise.key}>
             <div className="nori-card__top">
@@ -485,111 +445,16 @@ export function NoriPractice({
               </div>
             )}
 
-            {exercise.type === 'multiple_choice' ? (
-              <div className="nori-options" role="radiogroup" aria-labelledby={promptId}>
-                {exercise.options.map((option, optIdx) => {
-                  const isSelected = value === option
-                  const isCorrectOption = hasSubmitted && option === exercise.answer
-                  const isWrongPicked = hasSubmitted && latestAnswer === option && option !== exercise.answer
-                  const classes = ['nori-option', 'nori-option--has-key']
-                  if (isCorrectOption) classes.push('nori-option--correct')
-                  else if (isWrongPicked) classes.push('nori-option--incorrect')
-                  else if (isSelected) classes.push('nori-option--selected')
-
-                  return (
-                    <label key={option} className={classes.join(' ')}>
-                      <input
-                        type="radio"
-                        data-ui="nori"
-                        name={`nori-${courseKey}-${lessonKey}-${exercise.key}`}
-                        value={option}
-                        checked={isSelected}
-                        onChange={() => setInputs((prev) => ({ ...prev, [exercise.key]: option }))}
-                      />
-                      <span className="nori-option__key" aria-hidden="true">
-                        {OPTION_KEYS[optIdx] ?? optIdx + 1}
-                      </span>
-                      {exercise.optionHtmls?.[optIdx] ? (
-                        <span className="nori-option__body" dangerouslySetInnerHTML={{ __html: exercise.optionHtmls[optIdx]! }} />
-                      ) : (
-                        <span className="nori-option__body">{renderInlineMarkdown(option)}</span>
-                      )}
-                      {isCorrectOption && (
-                        <span className="nori-option__status nori-option__status--correct" aria-label="Correct option">
-                          <IconCheckCircle />
-                        </span>
-                      )}
-                      {isWrongPicked && (
-                        <span className="nori-option__status nori-option__status--incorrect" aria-label="Incorrect choice">
-                          <IconXCircle />
-                        </span>
-                      )}
-                    </label>
-                  )
-                })}
-              </div>
-            ) : exercise.type === 'multiple_select' ? (
-              <div className="nori-options" role="group" aria-labelledby={promptId}>
-                {exercise.options.map((option, optIdx) => {
-                  const isSelected = Boolean(currentPickedSet?.has(option))
-                  const isCorrectOption = hasSubmitted && Boolean(expectedSet?.has(option))
-                  const isWrongPicked = hasSubmitted && Boolean(latestPickedSet?.has(option)) && !expectedSet?.has(option)
-                  const classes = ['nori-option']
-                  if (isCorrectOption) classes.push('nori-option--correct')
-                  else if (isWrongPicked) classes.push('nori-option--incorrect')
-                  else if (isSelected) classes.push('nori-option--selected')
-
-                  return (
-                    <label key={option} className={classes.join(' ')}>
-                      <input
-                        type="checkbox"
-                        data-ui="nori"
-                        checked={isSelected}
-                        onChange={() => toggleMultiOption(exercise.key, option)}
-                      />
-                      <span className="nori-option__key" aria-hidden="true">
-                        {OPTION_KEYS[optIdx] ?? optIdx + 1}
-                      </span>
-                      {exercise.optionHtmls?.[optIdx] ? (
-                        <span className="nori-option__body" dangerouslySetInnerHTML={{ __html: exercise.optionHtmls[optIdx]! }} />
-                      ) : (
-                        <span className="nori-option__body">{renderInlineMarkdown(option)}</span>
-                      )}
-                      {isCorrectOption && (
-                        <span className="nori-option__status nori-option__status--correct" aria-label="Correct option">
-                          <IconCheckCircle />
-                        </span>
-                      )}
-                      {isWrongPicked && (
-                        <span className="nori-option__status nori-option__status--incorrect" aria-label="Incorrect choice">
-                          <IconXCircle />
-                        </span>
-                      )}
-                    </label>
-                  )
-                })}
-              </div>
-            ) : exercise.type === 'cloze' ? (
-              <input
-                type="text"
-                data-ui="nori"
-                className="nori-input-inline"
-                aria-labelledby={promptId}
-                style={{ width: '100%', height: '38px' }}
-                placeholder="Type exact answer…"
-                value={value}
-                onChange={(e) => setInputs((prev) => ({ ...prev, [exercise.key]: e.target.value }))}
-              />
-            ) : (
-              <textarea
-                data-ui="nori"
-                className={`nori-textarea${exercise.type === 'code' ? ' nori-textarea--code' : ''}`}
-                aria-labelledby={promptId}
-                placeholder={exercise.type === 'code' ? 'Write your code attempt…' : 'Write your explanation in your own words…'}
-                value={value}
-                onChange={(e) => setInputs((prev) => ({ ...prev, [exercise.key]: e.target.value }))}
-              />
-            )}
+            <ExerciseAnswerField
+              type={exercise.type}
+              options={exercise.options}
+              optionHtmls={exercise.optionHtmls}
+              name={`nori-${courseKey}-${lessonKey}-${exercise.key}`}
+              promptId={promptId}
+              value={value}
+              onChange={(next) => setInputs((prev) => ({ ...prev, [exercise.key]: next }))}
+              reveal={hasSubmitted ? { expected: exercise.answer, submitted: latestAnswer } : null}
+            />
 
             <div className="nori-actions">
               <button

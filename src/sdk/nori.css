@@ -635,3 +635,35 @@
   font-family: var(--nori-font-mono);
   font-size: 0.88em;
 }
+
+/* Course progress table */
+.nori-progress {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.nori-progress th,
+.nori-progress td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--nori-line);
+}
+
+.nori-progress td {
+  font-variant-numeric: tabular-nums;
+}
+
+.nori-progress thead th {
+  color: var(--nori-muted);
+  font-weight: 600;
+}
+
+.nori-progress__untouched {
+  color: var(--nori-muted);
+}
+
+.nori-progress__due {
+  color: var(--nori-warn);
+  font-weight: 600;
+}

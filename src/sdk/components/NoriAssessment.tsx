@@ -13,6 +13,7 @@ import {
   NoriApiError,
   toAssessmentSummary,
   type AssessmentDetail,
+  type AssessmentSampleInfo,
   type AssessmentSummary,
   type PracticeBank,
   type PracticeExercise,
@@ -39,10 +40,17 @@ export type NoriAssessmentProps = {
   courseKey: string
   lessonKey?: string
   bank?: string
+  /** Several practice banks pooled together, e.g. every lesson of a course; used instead of `bank`. */
+  banks?: string[]
   exercises?: PracticeExercise[]
   apiBaseUrl?: string
   title?: string
 }
+
+/** A bank exercise with the lesson it belongs to: the island's lessonKey, else its bank's. */
+type PoolExercise = PracticeExercise & { lessonKey: string }
+
+type SampleChoice = { enabled: boolean; count: number; strategy: 'random' | 'weak'; seed: string }
 
 const OPTION_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
@@ -64,12 +72,15 @@ export function NoriAssessment({
   courseKey,
   lessonKey = '',
   bank,
+  banks,
   exercises: inlineExercises,
   apiBaseUrl = '/api/nori/v1',
   title = 'Assessment',
 }: NoriAssessmentProps) {
   const client = useMemo(() => getSharedNoriClient(apiBaseUrl), [apiBaseUrl])
-  const [exercises, setExercises] = useState<PracticeExercise[]>(inlineExercises ?? [])
+  const [exercises, setExercises] = useState<PoolExercise[]>(() => (inlineExercises ?? []).map((ex) => ({ ...ex, lessonKey })))
+  const [sample, setSample] = useState<SampleChoice>({ enabled: false, count: 10, strategy: 'random', seed: '' })
+  const [lastSample, setLastSample] = useState<(AssessmentSampleInfo & { assessmentId: string }) | null>(null)
   const [llmConfigured, setLlmConfigured] = useState(false)
   const [assessments, setAssessments] = useState<AssessmentSummary[]>([])
   const [active, setActive] = useState<AssessmentDetail | null>(null)
@@ -92,19 +103,29 @@ export function NoriAssessment({
 
   useEffect(() => {
     if (inlineExercises) {
-      setExercises(inlineExercises)
+      setExercises(inlineExercises.map((ex) => ({ ...ex, lessonKey })))
       return
     }
-    if (!bank) return
+    const urls = banks ?? (bank ? [bank] : [])
+    if (!urls.length) return
     const controller = new AbortController()
-    fetch(bank, { signal: controller.signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Bank error (${r.status})`))))
-      .then((d: PracticeBank) => setExercises(Array.isArray(d.exercises) ? d.exercises : []))
+    Promise.all(
+      urls.map((url) =>
+        fetch(url, { signal: controller.signal })
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Bank error (${r.status})`))))
+          .then((d: PracticeBank) =>
+            (Array.isArray(d.exercises) ? d.exercises : []).map((ex) => ({ ...ex, lessonKey: lessonKey || d.lessonKey || '' })),
+          ),
+      ),
+    )
+      .then((lists) => setExercises(lists.flat()))
       .catch((e) => {
         if (!controller.signal.aborted) setError(e instanceof Error ? e.message : 'Failed to load bank.')
       })
     return () => controller.abort()
-  }, [bank, inlineExercises])
+    // banks is compared by content so an inline array literal does not refetch on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bank, banks?.join('\n'), inlineExercises, lessonKey])
 
   // Pass deadlineAt when the detail was fetched to (re)start the countdown; it is
   // anchored at send time. Other updates for the open assessment keep its deadline.
@@ -242,23 +263,37 @@ export function NoriAssessment({
   }, [deadline, activeId, refreshOpen])
 
   const timeUp = remainingMs === 0
+  const seedValid = sample.seed.trim() === '' || (/^\d+$/.test(sample.seed.trim()) && Number(sample.seed) <= 0xffffffff)
 
   const handleCreateAndStart = async () => {
     if (!exercises.length) return
     setBusy('create')
     setError(null)
     try {
-      const created = await client.createAssessment({
+      const input = {
         courseKey,
         title: `${title} (${new Date().toISOString().slice(0, 10)})`,
         mode,
         durationSeconds: mode === 'timed' ? minutes * 60 : undefined,
         items: exercises.map((ex) => ({
-          lessonKey,
+          lessonKey: ex.lessonKey,
           exerciseKey: ex.key,
           exerciseSnapshot: { type: ex.type, prompt: ex.prompt, options: ex.options, answer: ex.answer, explanation: ex.explanation },
         })),
-      })
+      }
+      let created: AssessmentDetail
+      if (sample.enabled) {
+        const seed = sample.seed.trim() === '' ? undefined : Number(sample.seed)
+        const res = await client.createSampledAssessment({
+          ...input,
+          sample: { count: Math.min(sample.count, exercises.length), strategy: sample.strategy, seed },
+        })
+        created = res.assessment
+        setLastSample({ ...res.sample, assessmentId: res.assessment.id })
+      } else {
+        created = await client.createAssessment(input)
+        setLastSample(null)
+      }
       const sentAt = Date.now()
       const started = await client.startAssessment(created.id)
       setAnswers({})
@@ -376,13 +411,81 @@ export function NoriAssessment({
               type="button"
               data-ui="nori"
               className="nori-btn nori-btn--primary"
-              disabled={busy === 'create' || !exercises.length}
+              disabled={busy === 'create' || !exercises.length || (sample.enabled && !seedValid)}
               onClick={handleCreateAndStart}
             >
               <IconPlay />
-              <span>{busy === 'create' ? 'Starting…' : `Start assessment (${exercises.length} items)`}</span>
+              <span>
+                {busy === 'create'
+                  ? 'Starting…'
+                  : `Start assessment (${sample.enabled ? Math.min(sample.count, exercises.length) : exercises.length} items)`}
+              </span>
             </button>
           </div>
+          {exercises.length > 1 && (
+            <div className="nori-actions">
+              <label className="nori-badge" style={{ cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  data-ui="nori"
+                  checked={sample.enabled}
+                  onChange={(e) => setSample((prev) => ({ ...prev, enabled: e.target.checked }))}
+                />
+                <span>Draw a sample of</span>
+              </label>
+              {sample.enabled && (
+                <>
+                  <input
+                    type="number"
+                    data-ui="nori"
+                    aria-label="Number of items to draw"
+                    className="nori-input-inline"
+                    min={1}
+                    max={Math.min(100, exercises.length)}
+                    value={sample.count}
+                    onChange={(e) =>
+                      setSample((prev) => ({ ...prev, count: Math.max(1, Math.min(100, Math.floor(Number(e.target.value)) || 1)) }))
+                    }
+                    style={{ width: '5rem', flex: '0 0 5rem' }}
+                  />
+                  <span className="nori-muted">of {exercises.length}</span>
+                  <label className="nori-badge" style={{ cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      data-ui="nori"
+                      name={`${idPrefix}-strategy`}
+                      checked={sample.strategy === 'random'}
+                      onChange={() => setSample((prev) => ({ ...prev, strategy: 'random' }))}
+                    />
+                    <span>At random</span>
+                  </label>
+                  <label className="nori-badge" style={{ cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      data-ui="nori"
+                      name={`${idPrefix}-strategy`}
+                      checked={sample.strategy === 'weak'}
+                      onChange={() => setSample((prev) => ({ ...prev, strategy: 'weak' }))}
+                    />
+                    <span>Favour weak &amp; due</span>
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    data-ui="nori"
+                    aria-label="Seed (optional; repeats a draw)"
+                    aria-invalid={!seedValid}
+                    className="nori-input-inline"
+                    placeholder="Seed (optional)"
+                    value={sample.seed}
+                    onChange={(e) => setSample((prev) => ({ ...prev, seed: e.target.value }))}
+                    style={{ width: '9rem', flex: '0 0 9rem' }}
+                  />
+                </>
+              )}
+            </div>
+          )}
+          {sample.enabled && !seedValid && <p className="nori-error">The seed is a whole number from 0 to 4294967295.</p>}
           {assessments.length > 0 && (
             <div className="nori-history">
               <p className="nori-muted">Previous assessments ({assessments.length})</p>
@@ -419,9 +522,15 @@ export function NoriAssessment({
               </button>
             </div>
           </div>
+          {lastSample?.assessmentId === active.id && (
+            <p className="nori-muted" data-sample-seed={lastSample.seed}>
+              Drew {lastSample.count} of {lastSample.poolSize} {lastSample.strategy === 'weak' ? 'favouring weak and due exercises' : 'at random'} ·
+              seed {lastSample.seed} (enter it again to repeat this draw)
+            </p>
+          )}
 
           {active.items.map((item, idx) => {
-            const bankEx = exercises.find((e) => e.key === item.exerciseKey)
+            const bankEx = exercises.find((e) => e.key === item.exerciseKey && e.lessonKey === item.lessonKey)
             const promptId = `${idPrefix}-prompt-${idx}`
             return (
               <div key={item.id} className="nori-attempt">

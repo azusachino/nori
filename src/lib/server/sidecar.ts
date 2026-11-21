@@ -11,7 +11,7 @@ import type { StreamFn } from './tutor'
 
 export const SIDECAR_API_VERSION = 1
 /** Optional endpoints added within v1; a client checks for one before using it. */
-export const SIDECAR_FEATURES = ['tutor-stream']
+export const SIDECAR_FEATURES = ['tutor-stream', 'progress', 'assessment-sample']
 
 export type SidecarExerciseType = 'multiple_choice' | 'multiple_select' | 'cloze' | 'written' | 'code'
 

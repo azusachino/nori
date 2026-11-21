@@ -46,7 +46,7 @@ All responses are JSON. `GET` endpoints set `Cache-Control: no-store`.
 
 ### Health
 
-- `GET <basePath>/v1/health` → `{ "ok": true, "apiVersion": 1, "llmConfigured": true, "features": ["tutor-stream"] }`. `features` lists optional endpoints added within v1; a client checks it before calling one, and treats a missing `features` (an older sidecar) as none.
+- `GET <basePath>/v1/health` → `{ "ok": true, "apiVersion": 1, "llmConfigured": true, "features": ["tutor-stream", "progress", "assessment-sample"] }`. `features` lists optional endpoints added within v1; a client checks it before calling one, and treats a missing `features` (an older sidecar) as none.
 
 ### Practice
 
@@ -59,7 +59,8 @@ All responses are JSON. `GET` endpoints set `Cache-Control: no-store`.
 ### Assessments
 
 - `GET <basePath>/v1/assessments?courseKey=<key>[&view=summary]` — lists assessments for a course, newest first (auto-finalizing any expired active timed assessments).
-- `POST <basePath>/v1/assessments` — creates a `timed` (`durationSeconds`: 60–28800) or `untimed` assessment from 1–100 client-supplied exercise snapshots (256 KB body limit). Reference answers and explanations remain hidden until finalization.
+- `POST <basePath>/v1/assessments` — creates a `timed` (`durationSeconds`: 60–28800) or `untimed` assessment from 1–100 client-supplied exercise snapshots (1 MB body limit). Reference answers and explanations remain hidden until finalization.
+  - Sampling (feature `assessment-sample`): with `sample: { count, strategy?, seed? }`, `items` is a pool of up to 500 exercises, each `(lessonKey, exerciseKey)` at most once, and the sidecar draws `count` (1–100; the whole pool if smaller) without replacement, in draw order. `strategy` is `random` (default, uniform) or `weak`, which weights each exercise by its recall state in this course: incorrect 4, due 3, never practised 2, practised and not due 1. `seed` is an integer 0–4294967295; the sidecar picks one if it is omitted. The same seed, pool order and (for `weak`) practice history draw the same items. The response adds `sample: { strategy, seed, count, poolSize }`; the seed is not stored with the assessment. Without `sample`, the request and response are unchanged.
 - `GET <basePath>/v1/assessments/{assessmentId}` — returns assessment detail with `serverNow` and `remainingMs`.
 - `POST <basePath>/v1/assessments/{assessmentId}/start` — activates a planned assessment and sets absolute `deadlineAt`.
 - `POST <basePath>/v1/assessments/{assessmentId}/answers` — saves `{ itemId, answer, expectedVersion? }` before `deadlineAt`.
@@ -86,3 +87,7 @@ History sent to the model: the system prompt, the lesson text with the selected 
 
 - `GET <basePath>/v1/review[?courseKey=<key>][&onlyDue=1][&view=summary]` — the spaced-recall queue, one item per tracked exercise, computed in SQLite and ordered by reason (`incorrect`, `has_takeaway_note`, `due_for_recall`, `scheduled`) then `dueAt`. Returns `{ courseKey, serverNow, summary: { totalTracked, dueNow, incorrectCount, scheduledCount }, items }`.
 - `GET <basePath>/v1/digest[?courseKey=<key>]` — a Markdown recall digest with stats.
+
+### Progress
+
+- `GET <basePath>/v1/progress?courseKey=<key>` (feature `progress`) — per-lesson progress, aggregated in SQLite over the review queue's per-exercise scoring, so `exercisesDue` agrees with `/v1/review`. Returns `{ courseKey, serverNow, totals, lessons }`. Each lesson is `{ lessonKey, exercisesAttempted, exercisesCorrect, exercisesIncorrect, exercisesDue, attempts, lastActivityAt }`, ordered by `lessonKey`. `totals` has the same counts without `lessonKey`. Correct and incorrect count exercises whose latest attempt was graded that way; open-ended exercises count as attempted only. Only lessons with attempts are listed.

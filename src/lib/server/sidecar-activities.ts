@@ -21,10 +21,14 @@ import {
   type ExerciseSnapshot,
 } from './sidecar'
 import { handleTutor, type StreamFn } from './tutor'
-import { buildRecallDigest, buildReviewQueue, buildReviewQueueSummary } from './review'
+import { buildCourseProgress, buildRecallDigest, buildReviewQueue, buildReviewQueueSummary, exerciseRecallStates } from './review'
+import { sampleWeighted, WEAK_WEIGHTS, type SampleStrategy } from './sampling'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const LARGE_BODY_LIMIT = 262144
+/** Creating an assessment can send a whole course's practice banks as the pool to sample from. */
+const ASSESSMENT_BODY_LIMIT = 1048576
+const MAX_ASSESSMENT_ITEMS = 100
+const MAX_SAMPLE_POOL = 500
 
 type SidecarOrm = BunSQLiteDatabase<typeof sidecarSchema>
 type AssessmentRow = typeof sidecarAssessments.$inferSelect
@@ -286,7 +290,7 @@ export async function handleSidecarActivities(
   }
 
   if (subPath === '/v1/assessments' && request.method === 'POST') {
-    const body = (await readJson(request, LARGE_BODY_LIMIT)) as Record<string, unknown> | null
+    const body = (await readJson(request, ASSESSMENT_BODY_LIMIT)) as Record<string, unknown> | null
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return Response.json({ error: 'Provide a valid JSON request body.' }, { status: 400 })
     }
@@ -306,10 +310,33 @@ export async function handleSidecarActivities(
       }
       durationSeconds = body.durationSeconds
     }
-    if (!Array.isArray(body.items) || body.items.length < 1 || body.items.length > 100) {
-      return Response.json({ error: 'Provide between 1 and 100 assessment items.' }, { status: 400 })
+    let sample: { count: number; strategy: SampleStrategy; seed: number } | null = null
+    if (body.sample !== undefined) {
+      const raw = body.sample as Record<string, unknown> | null
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return Response.json({ error: 'sample must be an object.' }, { status: 400 })
+      }
+      if (typeof raw.count !== 'number' || !Number.isInteger(raw.count) || raw.count < 1 || raw.count > MAX_ASSESSMENT_ITEMS) {
+        return Response.json({ error: `sample.count must be an integer from 1 to ${MAX_ASSESSMENT_ITEMS}.` }, { status: 400 })
+      }
+      const strategy = raw.strategy ?? 'random'
+      if (strategy !== 'random' && strategy !== 'weak') {
+        return Response.json({ error: 'sample.strategy must be random or weak.' }, { status: 400 })
+      }
+      if (raw.seed !== undefined && (typeof raw.seed !== 'number' || !Number.isInteger(raw.seed) || raw.seed < 0 || raw.seed > 0xffffffff)) {
+        return Response.json({ error: 'sample.seed must be an integer from 0 to 4294967295.' }, { status: 400 })
+      }
+      const seed = typeof raw.seed === 'number' ? raw.seed : crypto.getRandomValues(new Uint32Array(1))[0]!
+      sample = { count: raw.count, strategy, seed }
     }
-    const parsedItems: { lessonKey: string; exerciseKey: string; contentHash: string; snapshot: ExerciseSnapshot }[] = []
+    const maxItems = sample ? MAX_SAMPLE_POOL : MAX_ASSESSMENT_ITEMS
+    if (!Array.isArray(body.items) || body.items.length < 1 || body.items.length > maxItems) {
+      return Response.json(
+        { error: sample ? `Provide between 1 and ${MAX_SAMPLE_POOL} items to sample from.` : `Provide between 1 and ${MAX_ASSESSMENT_ITEMS} assessment items.` },
+        { status: 400 },
+      )
+    }
+    let parsedItems: { lessonKey: string; exerciseKey: string; contentHash: string; snapshot: ExerciseSnapshot }[] = []
     for (const rawItem of body.items) {
       if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
         return Response.json({ error: 'Each assessment item must be an object.' }, { status: 400 })
@@ -322,6 +349,24 @@ export async function handleSidecarActivities(
       const snap = parseExerciseSnapshot(itemObj.exerciseSnapshot)
       if ('error' in snap) return Response.json({ error: snap.error }, { status: 400 })
       parsedItems.push({ lessonKey, exerciseKey, contentHash: hashExerciseSnapshot(snap), snapshot: snap })
+    }
+
+    let sampleInfo: { strategy: SampleStrategy; seed: number; count: number; poolSize: number } | null = null
+    if (sample) {
+      const keyOf = (item: { lessonKey: string; exerciseKey: string }) => `${item.lessonKey}\u0000${item.exerciseKey}`
+      if (new Set(parsedItems.map(keyOf)).size !== parsedItems.length) {
+        return Response.json({ error: 'The sample pool lists an exercise twice.' }, { status: 400 })
+      }
+      const states = sample.strategy === 'weak' ? exerciseRecallStates(orm, courseKey, now()) : null
+      const weight = (item: { lessonKey: string; exerciseKey: string }) => {
+        if (!states) return 1
+        const state = states.get(keyOf(item))
+        if (!state) return WEAK_WEIGHTS.unattempted
+        return state.isIncorrect ? WEAK_WEIGHTS.incorrect : state.isDue ? WEAK_WEIGHTS.due : WEAK_WEIGHTS.notDue
+      }
+      const poolSize = parsedItems.length
+      parsedItems = sampleWeighted(parsedItems, sample.count, sample.seed, weight)
+      sampleInfo = { strategy: sample.strategy, seed: sample.seed, count: parsedItems.length, poolSize }
     }
 
     const id = crypto.randomUUID()
@@ -354,7 +399,10 @@ export async function handleSidecarActivities(
       })
     })
     const row = loadAssessment(orm, id, ts)!
-    return Response.json({ assessment: buildAssessmentDetail(orm, row, ts) }, { status: 201 })
+    return Response.json(
+      sampleInfo ? { assessment: buildAssessmentDetail(orm, row, ts), sample: sampleInfo } : { assessment: buildAssessmentDetail(orm, row, ts) },
+      { status: 201 },
+    )
   }
 
   const assessMatch = subPath.match(/^\/v1\/assessments\/([^/]+)(?:\/(start|answers|submit|feedback|correct))?$/)
@@ -586,6 +634,12 @@ export async function handleSidecarActivities(
         ? buildReviewQueueSummary(orm, { courseKey, onlyDue, now: now() })
         : buildReviewQueue(orm, { courseKey, onlyDue, now: now() })
     return Response.json(queue, { headers: { 'Cache-Control': 'no-store' } })
+  }
+
+  if (subPath === '/v1/progress' && request.method === 'GET') {
+    const courseKey = validateCourseKey(url.searchParams.get('courseKey'))
+    if (!courseKey) return Response.json({ error: 'Provide a valid courseKey in <track>/<course> format.' }, { status: 400 })
+    return Response.json(buildCourseProgress(orm, courseKey, now()), { headers: { 'Cache-Control': 'no-store' } })
   }
 
   if (subPath === '/v1/digest' && request.method === 'GET') {
