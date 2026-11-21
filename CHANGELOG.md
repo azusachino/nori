@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Course-wide assessments pool every lesson.** `<NoriAssessment banks={[...]} />` keeps each bank's own `lessonKey` on its exercises, so lessons that reuse exercise keys (`q-1` in each) sample together instead of failing with "The sample pool lists an exercise twice". With `banks`, an explicit `lessonKey` prop now only fills in for a bank that names none; with a single `bank` or inline `exercises` it still sets the lesson. The sidecar already identified pool items by `(lessonKey, exerciseKey)`; a true duplicate is still rejected. `poolBankExercises` is exported from the component module for this rule.
+
 ## 0.2.0
 
 - **Streaming tutor (`POST /v1/tutor/stream`).** The tutor reply streams to `<NoriTutor />` over Server-Sent Events and shows as it arrives; the learner's question shows at once. A Cancel button aborts the request and the model call on the sidecar, saves nothing, and puts the question back in the box. `POST /v1/tutor` is unchanged and also cancels the model call when the client disconnects. `GET /v1/health` lists `features: ["tutor-stream"]`; `NoriClient.streamTutorMessage` uses the blocking call against an older sidecar. Deploy the sidecar first for streaming; older islands keep working.
