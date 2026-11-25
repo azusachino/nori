@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, sql } from 'drizzle-orm'
 import type { BunSQLiteDatabase } from 'drizzle-orm/bun-sqlite'
 import { complete, ModelError } from './ai'
-import { INVALID_VIEW_ERROR, parseListView, readJson } from './input'
+import { INVALID_VIEW_ERROR, parseListView, readJson, readJsonResult } from './input'
 import {
   sidecarAssessmentAnswers,
   sidecarAssessmentItems,
@@ -290,7 +290,13 @@ export async function handleSidecarActivities(
   }
 
   if (subPath === '/v1/assessments' && request.method === 'POST') {
-    const body = (await readJson(request, ASSESSMENT_BODY_LIMIT)) as Record<string, unknown> | null
+    const parsed = await readJsonResult(request, ASSESSMENT_BODY_LIMIT)
+    if (!parsed.ok) {
+      return parsed.reason === 'too-large'
+        ? Response.json({ error: `Request body exceeds the ${ASSESSMENT_BODY_LIMIT} byte limit.` }, { status: 413 })
+        : Response.json({ error: 'Provide a valid JSON request body.' }, { status: 400 })
+    }
+    const body = parsed.data as Record<string, unknown> | null
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return Response.json({ error: 'Provide a valid JSON request body.' }, { status: 400 })
     }

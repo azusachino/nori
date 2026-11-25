@@ -186,6 +186,9 @@ export class AssessmentAnswerSync {
   /** Save what can be saved, then submit, or refuse naming the answers that could not be saved. */
   async submit(): Promise<AssessmentDetail> {
     await this.flush()
+    while ([...this.dirty.keys()].some((id) => this.states[id] === 'pending')) {
+      await this.flush()
+    }
     if (this.dirty.size > 0) {
       const lines = this.detail.items
         .filter((item) => this.dirty.has(item.id))

@@ -806,3 +806,56 @@ describe('older sidecars', () => {
     expect((await client.listAssessmentSummaries(COURSE)).assessments[0]).not.toHaveProperty('items')
   })
 })
+
+describe('review follow-ups', () => {
+  test('a non-JSON 403 from a proxy counts as unreachable, not rejected', async () => {
+    const client = makeClient({
+      fetchFn: async () => new Response('<html>Forbidden</html>', { status: 403 }),
+      retryBaseMs: 60_000,
+    })
+    await expect(client.createAttempt({ courseKey: COURSE, exerciseKey: 'q', exerciseSnapshot: written, answer: 'x' })).rejects.toBeInstanceOf(
+      NoriNetworkError,
+    )
+    expect(client.connectionState).toBe('offline')
+    client.dispose()
+  })
+
+  test('unsubscribing the last listener stops the offline health retry loop', async () => {
+    let healthCalls = 0
+    const client = makeClient({
+      fetchFn: async (input) => {
+        if (String(input).endsWith('/health')) healthCalls++
+        throw new Error('offline')
+      },
+      retryBaseMs: 15,
+      retryMaxMs: 15,
+    })
+    const unsub = client.subscribe(() => undefined)
+    await client.health().catch(() => undefined)
+    expect(client.connectionState).toBe('offline')
+    unsub()
+    const before = healthCalls
+    await sleep(50)
+    expect(healthCalls).toBe(before)
+  })
+
+  test('typing during an in-flight submit flushes the new edit instead of refusing', async () => {
+    const real = sidecarFetch()
+    const client = makeClient({ fetchFn: real })
+    const created = await client.createAssessment({
+      courseKey: COURSE,
+      title: 'In-flight',
+      mode: 'untimed',
+      items: [{ exerciseKey: 'q1', exerciseSnapshot: written }],
+    })
+    const started = await client.startAssessment(created.id)
+    const sync = new AssessmentAnswerSync({ client, assessment: started, debounceMs: 60_000 })
+    sync.setAnswer(started.items[0]!.id, 'First')
+    const submitting = sync.submit()
+    sync.setAnswer(started.items[0]!.id, 'Updated')
+    const submitted = await submitting
+    expect(submitted.status).toBe('submitted')
+    expect(submitted.items[0]!.answer).toBe('Updated')
+    sync.dispose()
+  })
+})

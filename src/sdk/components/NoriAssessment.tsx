@@ -115,6 +115,7 @@ export function NoriAssessment({
   const syncRef = useRef<AssessmentAnswerSync | null>(null)
   // Id of the assessment on screen; late responses for any other one are dropped.
   const openIdRef = useRef<string | null>(null)
+  const openSeqRef = useRef(0)
   const idPrefix = useId()
 
   useEffect(() => {
@@ -195,17 +196,21 @@ export function NoriAssessment({
   })
 
   const handleOpen = async (assessmentId: string) => {
+    const seq = ++openSeqRef.current
     setError(null)
     try {
       // List entries carry a stale remainingMs; fetch fresh before starting the countdown.
       const opened = await openAssessment(client, assessmentId)
+      if (openSeqRef.current !== seq) return
       syncAssessment(opened.detail, opened.deadline)
     } catch (e) {
+      if (openSeqRef.current !== seq) return
       setError(e instanceof Error ? e.message : 'Could not open assessment.')
     }
   }
 
   const handleClose = () => {
+    openSeqRef.current++
     openIdRef.current = null
     setActive(null)
   }

@@ -12,7 +12,7 @@ import { Fragment, type ReactNode } from 'react'
 const INLINE_TOKEN_RE =
   /(\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|```([^`\n]+)```|``([^`\n]+)``|`([^`\n]+)`|\*\*([^*]+)\*\*|\*([^*\n]+)\*|\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\)|\$([^\s$][^$\n]*?[^\s$]|\S)\$)/g
 
-export function renderInlineMarkdown(text: string): ReactNode[] {
+export function renderInlineMarkdown(text: string, options: { plainLinks?: boolean } = {}): ReactNode[] {
   const nodes: ReactNode[] = []
   let lastIndex = 0
   let key = 0
@@ -28,9 +28,13 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
       const label = (match[3] ?? rawTarget.split('/').pop() ?? rawTarget).trim()
       const href = `/${rawTarget.replace(/\.md$/, '').replace(/\/index$/, '')}`
       nodes.push(
-        <a key={`w-${key++}`} href={href}>
-          {label}
-        </a>,
+        options.plainLinks ? (
+          <Fragment key={`w-${key++}`}>{label}</Fragment>
+        ) : (
+          <a key={`w-${key++}`} href={href}>
+            {label}
+          </a>
+        ),
       )
     } else if (match[4] !== undefined) {
       nodes.push(<code key={`c3-${key++}`}>{match[4].trim()}</code>)
@@ -39,14 +43,18 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
     } else if (match[6] !== undefined) {
       nodes.push(<code key={`c-${key++}`}>{match[6]}</code>)
     } else if (match[7] !== undefined) {
-      nodes.push(<strong key={`b-${key++}`}>{renderInlineMarkdown(match[7])}</strong>)
+      nodes.push(<strong key={`b-${key++}`}>{renderInlineMarkdown(match[7], options)}</strong>)
     } else if (match[8] !== undefined) {
-      nodes.push(<em key={`i-${key++}`}>{renderInlineMarkdown(match[8])}</em>)
+      nodes.push(<em key={`i-${key++}`}>{renderInlineMarkdown(match[8], options)}</em>)
     } else if (match[9] !== undefined && match[10] !== undefined) {
       nodes.push(
-        <a key={`l-${key++}`} href={match[10]}>
-          {renderInlineMarkdown(match[9])}
-        </a>,
+        options.plainLinks ? (
+          <Fragment key={`l-${key++}`}>{renderInlineMarkdown(match[9], options)}</Fragment>
+        ) : (
+          <a key={`l-${key++}`} href={match[10]}>
+            {renderInlineMarkdown(match[9], options)}
+          </a>
+        ),
       )
     } else if (match[11] !== undefined) {
       nodes.push(
@@ -67,7 +75,7 @@ export function renderInlineMarkdown(text: string): ReactNode[] {
 
 type HeadingIds = { prefix: string; next: number }
 
-const HEADING_RE = /^\s*(#{1,4})\s+(.+)$/
+const HEADING_RE = /^\s*(#{1,4})\s+(.*\S.*)$/
 const FENCE_OPEN_RE = /^[ \t]*```([^`]*)$/
 const FENCE_CLOSE_RE = /^[ \t]*```[ \t]*$/
 

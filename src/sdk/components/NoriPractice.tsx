@@ -323,31 +323,40 @@ export function NoriPractice({
   const handleCopyMarkdown = async () => {
     // The export needs prompts and feedback, which the list does not carry: fetch them now.
     // Offline, fall back to what is on the page (current prompts, feedback already loaded).
-    let full: PracticeAttempt[]
+    const mdPromise = (async () => {
+      let full: PracticeAttempt[]
+      try {
+        full = (await client.listPractice({ courseKey, lessonKey })).attempts
+      } catch {
+        full = attempts.map((summary) => {
+          const loaded = fullAttempts[summary.id]
+          if (loaded) return loaded
+          const exercise = exercises.find((ex) => ex.key === summary.exerciseKey)
+          const { exerciseType, hasFeedback: _hasFeedback, ...rest } = summary
+          return {
+            ...rest,
+            feedback: '',
+            exerciseSnapshot: {
+              type: exerciseType,
+              prompt: exercise?.prompt ?? '',
+              options: exercise?.options ?? [],
+              answer: exercise?.answer ?? '',
+              explanation: exercise?.explanation ?? '',
+            },
+          }
+        })
+      }
+      return formatAttemptsAsMarkdown({ courseKey, lessonKey, attempts: full, drafts })
+    })()
     try {
-      full = (await client.listPractice({ courseKey, lessonKey })).attempts
-    } catch {
-      full = attempts.map((summary) => {
-        const loaded = fullAttempts[summary.id]
-        if (loaded) return loaded
-        const exercise = exercises.find((ex) => ex.key === summary.exerciseKey)
-        const { exerciseType, hasFeedback: _hasFeedback, ...rest } = summary
-        return {
-          ...rest,
-          feedback: '',
-          exerciseSnapshot: {
-            type: exerciseType,
-            prompt: exercise?.prompt ?? '',
-            options: exercise?.options ?? [],
-            answer: exercise?.answer ?? '',
-            explanation: exercise?.explanation ?? '',
-          },
-        }
-      })
-    }
-    const md = formatAttemptsAsMarkdown({ courseKey, lessonKey, attempts: full, drafts })
-    try {
-      await navigator.clipboard.writeText(md)
+      // Safari requires clipboard writes to start synchronously within the click gesture.
+      if (typeof ClipboardItem !== 'undefined' && typeof navigator.clipboard?.write === 'function') {
+        await navigator.clipboard.write([
+          new ClipboardItem({ 'text/plain': mdPromise.then((md) => new Blob([md], { type: 'text/plain' })) }),
+        ])
+      } else {
+        await navigator.clipboard.writeText(await mdPromise)
+      }
       setCopied(true)
       setTimeout(() => setCopied(false), 1800)
     } catch {
