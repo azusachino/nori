@@ -41,6 +41,7 @@ export async function complete(messages: Message[], maxTokens = 4096, signal?: A
   if (!response.ok) throw new ModelError(`The model provider returned an error (${response.status}).`)
   const data = await response.json() as { choices?: { message?: { content?: unknown; reasoning_content?: unknown }; finish_reason?: string }[] }
   const choice = data.choices?.[0]
+  if (choice?.finish_reason === 'length') throw new ModelError('The model reply was cut off at the token limit. Please retry with a shorter question.')
   const rawContent = typeof choice?.message?.content === 'string' && choice.message.content.trim()
     ? choice.message.content
     : typeof choice?.message?.reasoning_content === 'string'
@@ -79,18 +80,24 @@ export async function* completeStream(messages: Message[], options: StreamOption
     let length = 0
     let reasoning = ''
     let finished = false
+    let sawDone = false
+    let truncated = false
     // One SSE line: the text it adds, or null. A stream is complete only on `[DONE]` or a
     // finish_reason; an in-band error or an early EOF is a failure, never a finished reply.
+    // Keep reading until `[DONE]` or EOF even after `finish_reason` so trailing chunks are not lost.
     const readLine = (raw: string): string | null => {
       const line = raw.replace(/\r$/, '')
       if (!line.startsWith('data:')) return null
       const payload = line.slice(5).trim()
-      if (payload === '[DONE]') { finished = true; return null }
+      if (payload === '[DONE]') { finished = true; sawDone = true; return null }
       let chunk: { error?: unknown; choices?: { finish_reason?: unknown; delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown } }[] }
       try { chunk = JSON.parse(payload) } catch { return null }
       if (chunk.error) throw new ModelError('The model provider reported an error mid-reply. Please retry.')
       const choice = chunk.choices?.[0]
-      if (typeof choice?.finish_reason === 'string' && choice.finish_reason) finished = true
+      if (typeof choice?.finish_reason === 'string' && choice.finish_reason) {
+        finished = true
+        if (choice.finish_reason === 'length') truncated = true
+      }
       const delta = choice?.delta
       if (typeof delta?.content === 'string' && delta.content) return delta.content
       const thought = typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : typeof delta?.reasoning === 'string' ? delta.reasoning : ''
@@ -98,7 +105,7 @@ export async function* completeStream(messages: Message[], options: StreamOption
       return null
     }
     let streamEnded = false
-    while (!finished && !streamEnded) {
+    while (!sawDone && !streamEnded) {
       const { done, value } = await reader.read()
       if (done) {
         // The last line may lack its newline.
@@ -109,7 +116,7 @@ export async function* completeStream(messages: Message[], options: StreamOption
         buffer += value
       }
       let newline: number
-      while (!finished && (newline = buffer.indexOf('\n')) >= 0) {
+      while (!sawDone && (newline = buffer.indexOf('\n')) >= 0) {
         const text = readLine(buffer.slice(0, newline))
         buffer = buffer.slice(newline + 1)
         if (text === null) continue
@@ -118,6 +125,7 @@ export async function* completeStream(messages: Message[], options: StreamOption
         yield text
       }
     }
+    if (truncated) throw new ModelError('The model reply was cut off at the token limit. Please retry with a shorter question.')
     if (!finished) throw new ModelError('The model reply was cut off. Please retry.')
     if (length === 0) {
       if (!reasoning.trim() || reasoning.length > REPLY_LIMIT) throw new ModelError('The model returned an incomplete or invalid response. Please retry.')

@@ -45,7 +45,7 @@ function ReplyOutline({ text, idPrefix }: { text: string; idPrefix: string }) {
       <ul>
         {headings.map((h) => (
           <li key={h.id} className={`nori-outline__item nori-outline__item--${h.level}`}>
-            <a href={`#${h.id}`}>{renderInlineMarkdown(h.text)}</a>
+            <a href={`#${h.id}`}>{renderInlineMarkdown(h.text, { plainLinks: true })}</a>
           </li>
         ))}
       </ul>

@@ -281,6 +281,22 @@ describe('provider streaming (completeStream)', () => {
     expect(await collect()).toEqual(['A', 'B'])
   })
 
+  test('keeps reading after finish_reason until [DONE] or EOF so trailing content is not lost', async () => {
+    fakeProvider(() =>
+      sse([
+        'data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"B"}}]}\n\n',
+        'data: [DONE]\n\n',
+      ]),
+    )
+    expect(await collect()).toEqual(['A', 'B'])
+  })
+
+  test('rejects a token-truncated reply (finish_reason: length)', async () => {
+    fakeProvider(() => sse(['data: {"choices":[{"delta":{"content":"Cut"},"finish_reason":"length"}]}\n\n', 'data: [DONE]\n\n']))
+    await expect(collect()).rejects.toThrow(/token limit/)
+  })
+
   test('falls back to reasoning text when no content arrives', async () => {
     fakeProvider(() => sse(['data: {"choices":[{"delta":{"reasoning_content":"thought"}}]}\n\n', 'data: [DONE]\n\n']))
     const out: string[] = []

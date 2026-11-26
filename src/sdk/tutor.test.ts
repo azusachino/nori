@@ -121,6 +121,36 @@ describe('NoriClient.streamTutorMessage', () => {
     expect(invalid).toBeInstanceOf(NoriApiError)
     expect(invalid.status).toBe(400)
   })
+
+  test('parses CRLF-separated SSE events and rejects a done event without turns', async () => {
+    const sseFetch = (chunks: string[]) => async (input: URL | RequestInfo) => {
+      if (String(input).endsWith('/health')) {
+        return Response.json({ status: 'ok', apiVersion: 1, llmConfigured: true, features: ['tutor-stream'] })
+      }
+      return new Response(
+        new ReadableStream({
+          start(c) {
+            for (const chunk of chunks) c.enqueue(new TextEncoder().encode(chunk))
+            c.close()
+          },
+        }),
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      )
+    }
+    const deltas: string[] = []
+    const res = await makeClient(
+      sseFetch([
+        'event: delta\r\ndata: {"text":"Hi"}\r\n\r\n',
+        'event: done\r\ndata: {"turns":[{"id":"1","role":"user","content":"q","lessonHash":"h","contextMeta":{},"createdAt":1}]}\r\n\r\n',
+      ]),
+    ).streamTutorMessage(input, { onDelta: (t) => deltas.push(t) })
+    expect(deltas).toEqual(['Hi'])
+    expect(res.turns).toHaveLength(1)
+
+    await expect(
+      makeClient(sseFetch(['event: done\r\ndata: {}\r\n\r\n'])).streamTutorMessage(input),
+    ).rejects.toThrow(/invalid reply/)
+  })
 })
 
 describe('tutor reply rendering', () => {
@@ -142,5 +172,12 @@ describe('tutor reply rendering', () => {
   test('a heading marker still streaming in renders instead of stalling', () => {
     const html = renderToStaticMarkup(createElement('div', null, renderRichText('Intro\n# ')))
     expect(html).toContain('Intro')
+    expect(extractHeadings('Intro\n#   \n## Real', 'r2')).toEqual([{ id: 'r2-0', level: 2, text: 'Real' }])
+  })
+
+  test('links inside headings render without nested anchors when plainLinks is set', () => {
+    const { renderInlineMarkdown } = require('./components/markdown') as typeof import('./components/markdown')
+    const html = renderToStaticMarkup(createElement('a', { href: '#h-0' }, renderInlineMarkdown('See [docs](https://example.com)', { plainLinks: true })))
+    expect(html).toBe('<a href="#h-0">See docs</a>')
   })
 })

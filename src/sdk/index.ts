@@ -433,6 +433,10 @@ export class NoriClient {
     this.listeners.add(listener)
     return () => {
       this.listeners.delete(listener)
+      if (this.listeners.size === 0 && this.retryTimer) {
+        clearTimeout(this.retryTimer)
+        this.retryTimer = null
+      }
     }
   }
 
@@ -514,9 +518,9 @@ export class NoriClient {
   /** Throws the error a non-2xx response stands for. */
   private throwFailure(response: Response, parsed: Record<string, unknown> | null): never {
     const data = parsed ?? {}
-    // The sidecar always answers errors with { error }. A 404+ without it came from
-    // something in front of the sidecar (a proxy, a static host), so it is unreachable.
-    if (response.status >= 404 && typeof data.error !== 'string') {
+    // The sidecar always answers errors with { error }. Any non-2xx without it came from
+    // something in front of the sidecar (a proxy, an auth layer, a static host), so it is unreachable.
+    if (typeof data.error !== 'string') {
       this.setState('offline')
       throw new NoriNetworkError(`The Nori sidecar is unreachable (${response.status}).`)
     }

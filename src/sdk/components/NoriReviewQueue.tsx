@@ -50,6 +50,7 @@ export function NoriReviewQueue({
   const [retryInputs, setRetryInputs] = useState<Record<string, string>>({})
   // Items answered here stay on screen with their result until dismissed, even once no longer due.
   const [answered, setAnswered] = useState<Record<string, PracticeAttempt>>({})
+  const [refreshStale, setRefreshStale] = useState<Record<string, boolean>>({})
   const [itemErrors, setItemErrors] = useState<Record<string, string>>({})
   // Keys with a request in flight: 'digest', or one per queue item, so items save independently.
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set())
@@ -68,13 +69,16 @@ export function NoriReviewQueue({
   const [error, setError] = useState<string | null>(null)
 
   const refreshQueue = useCallback(
-    async (signal?: AbortSignal) => {
+    async (signal?: AbortSignal): Promise<boolean> => {
       try {
         const res = await client.getReviewQueueSummary({ courseKey }, signal)
-        if (signal?.aborted) return
+        if (signal?.aborted) return false
         setQueue(res)
+        setRefreshStale({})
+        return true
       } catch {
         // The shared client tracks offline state and retries with backoff.
+        return false
       }
     },
     [client, courseKey],
@@ -142,7 +146,8 @@ export function NoriReviewQueue({
         const detail: PracticeUpdatedDetail = { courseKey: item.courseKey, lessonKey: item.lessonKey, attempts: [toAttemptSummary(created)] }
         window.dispatchEvent(new CustomEvent('nori:practice-updated', { detail }))
       }
-      await refreshQueue()
+      const refreshed = await refreshQueue()
+      if (!refreshed) setRefreshStale((prev) => ({ ...prev, [key]: true }))
     } catch (e) {
       const message = e instanceof NoriApiError ? e.message : 'Could not save the answer. Check the connection and try again.'
       setItemErrors((prev) => ({ ...prev, [key]: message }))
@@ -304,7 +309,11 @@ export function NoriReviewQueue({
                             <span>{result.correct === 1 ? 'Correct' : result.correct === 0 ? 'Incorrect' : 'Answer recorded'}</span>
                           </span>
                           <span className="nori-muted">
-                            {item.isDue ? 'Still due: try again later' : `Next review in ${item.intervalDays} day(s)`}
+                            {refreshStale[key]
+                              ? 'Saved (queue refresh pending)'
+                              : item.isDue
+                                ? 'Still due: try again later'
+                                : `Next review in ${item.intervalDays} day(s)`}
                           </span>
                         </div>
                         {result.exerciseSnapshot.type !== 'multiple_choice' && result.exerciseSnapshot.type !== 'multiple_select' && (
